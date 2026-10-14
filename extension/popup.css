@@ -1,7 +1,5 @@
 body { width: 310px; margin: 20px; color: #202735; font: 14px/1.5 system-ui, sans-serif; }
 h1 { font-size: 19px; margin: 0 0 10px; }
-label { display: block; font-weight: 600; }
-input { box-sizing: border-box; width: 100%; padding: 9px; margin: 6px 0 12px; border: 1px solid #aeb7c5; border-radius: 5px; }
 button { padding: 8px 14px; margin-right: 6px; cursor: pointer; }
 #status { font-weight: 600; }
 .detail { font-size: 12px; color: #596477; }

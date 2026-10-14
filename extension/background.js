@@ -8,9 +8,11 @@ let activeGeneration = 0;
 let commandQueue = Promise.resolve();
 const attached = new Set();
 const initializing = new Map();
-const startup = chrome.storage.local.get(['enabled', 'token']).then(config => {
-  enabled = !!config.enabled;
-  if (enabled) connect(config.token);
+const startup = chrome.storage.local.get(['enabled', 'connectionError']).then(async config => {
+  await chrome.storage.local.remove('token');
+  enabled = config.enabled !== false;
+  if (!enabled && config.connectionError) status = config.connectionError;
+  if (enabled) connect();
 });
 
 async function attach(tabId) {
@@ -125,12 +127,11 @@ async function dispatch(method, params = {}) {
   throw new Error(`Unknown method: ${method}`);
 }
 
-function connect(token) {
+function connect() {
   if (!enabled || socket) return;
-  if (!token || token.length < 32) { status = 'Missing bridge token'; return; }
   status = 'Connecting…';
   const ws = socket = new WebSocket(ENDPOINT);
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token }));
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', protocol: 1 }));
   ws.onmessage = async event => {
     let message;
     try { message = JSON.parse(event.data); } catch { ws.close(); return; }
@@ -152,10 +153,17 @@ function connect(token) {
     }
   };
   ws.onerror = () => { status = 'Bridge unavailable; retrying automatically'; };
-  ws.onclose = () => {
+  ws.onclose = async event => {
     if (socket !== ws) return;
     socket = undefined;
     clearInterval(heartbeat);
+    if (enabled && event?.code === 1008) {
+      const reason = event.reason || 'Bridge rejected the connection';
+      await disconnect();
+      status = `Connection rejected: ${reason}. Check other Chrome profiles, then click Connect to retry.`;
+      await chrome.storage.local.set({ connectionError: status });
+      return;
+    }
     status = enabled ? 'Bridge disconnected; retrying automatically' : 'Disconnected';
   };
   clearInterval(heartbeat);
@@ -166,6 +174,7 @@ async function disconnect() {
   generation++;
   await chrome.storage.local.set({ enabled: false });
   await chrome.storage.local.remove('token');
+  await chrome.storage.local.remove('connectionError');
   clearInterval(heartbeat);
   socket?.close();
   socket = undefined;
@@ -178,7 +187,7 @@ chrome.debugger.onDetach.addListener(({ tabId }) => attached.delete(tabId));
 chrome.alarms.create('reconnect', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(async ({ name }) => {
   await startup;
-  if (name === 'reconnect' && enabled && !socket) connect((await chrome.storage.local.get('token')).token);
+  if (name === 'reconnect' && enabled && !socket) connect();
 });
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
@@ -186,11 +195,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     await startup;
     if (message.type === 'disconnect') await disconnect();
     if (message.type === 'connect') {
-      if (typeof message.token !== 'string' || message.token.length < 32) throw new Error('Invalid token');
       await disconnect();
       enabled = true;
-      await chrome.storage.local.set({ enabled: true, token: message.token });
-      connect(message.token);
+      await chrome.storage.local.set({ enabled: true });
+      connect();
     }
     reply({ enabled, status });
   })().catch(error => reply({ enabled, status: error.message }));

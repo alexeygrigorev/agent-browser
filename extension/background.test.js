@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 
-async function setup({ beforeCommand = async () => {} } = {}) {
+async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) } } = {}) {
   const calls = [];
-  const stored = { enabled: true, token: 'a'.repeat(32) };
+  const stored = { ...config };
   let listener;
   let socket;
+  let alarm;
+  let connections = 0;
   const chrome = {
     storage: { local: {
       get: async () => ({ ...stored }), set: async value => Object.assign(stored, value),
@@ -30,12 +32,12 @@ async function setup({ beforeCommand = async () => {} } = {}) {
     },
     tabs: { query: async () => [{ id: 7, title: 'Signed in', url: 'https://example.com', active: true }],
       create: async params => params, update: async (tabId, params) => ({ tabId, ...params }), remove: async () => {} },
-    alarms: { create() {}, onAlarm: { addListener() {} } },
+    alarms: { create() {}, onAlarm: { addListener(fn) { alarm = fn; } } },
     runtime: { id: 'extension-id', onMessage: { addListener(fn) { listener = fn; } } }
   };
   class WebSocket {
     static OPEN = 1;
-    constructor(url) { this.url = url; this.readyState = 1; this.sent = []; socket = this; }
+    constructor(url) { this.url = url; this.readyState = 1; this.sent = []; socket = this; connections++; }
     send(value) { this.sent.push(JSON.parse(value)); }
     close() { this.readyState = 3; this.onclose?.(); }
   }
@@ -43,6 +45,8 @@ async function setup({ beforeCommand = async () => {} } = {}) {
   vm.runInContext(await readFile(new URL('./background.js', import.meta.url), 'utf8'), context);
   await new Promise(resolve => setImmediate(resolve));
   return { calls, stored, socket,
+    alarm: () => alarm({ name: 'reconnect' }),
+    connections: () => connections,
     command: async (method, params = {}) => {
       await socket.onmessage({ data: JSON.stringify({ id: 'test', method, params }) });
       return socket.sent.at(-1);
@@ -51,12 +55,12 @@ async function setup({ beforeCommand = async () => {} } = {}) {
   };
 }
 
-test('authenticates only to the fixed loopback bridge', async () => {
-  const { socket } = await setup();
+test('first install automatically introduces itself to the fixed loopback bridge without tokens', async () => {
+  const { socket, message } = await setup({ config: {} });
   socket.onopen();
   assert.equal(socket.url, 'ws://127.0.0.1:19333/extension');
-  assert.equal(socket.sent[0].type, 'auth');
-  assert.equal(socket.sent[0].token.length, 32);
+  assert.deepEqual(socket.sent[0], { type: 'hello', protocol: 1 });
+  assert.equal((await message({ type: 'status' })).enabled, true);
 });
 
 test('lists tabs, dispatches CDP once attached and reports invalid commands', async () => {
@@ -121,4 +125,45 @@ test('full-page screenshots request document dimensions', async () => {
   assert.equal(capture.clip.height, 4000);
   assert.equal(capture.clip.width, 1200);
   assert.equal(capture.captureBeyondViewport, true);
+});
+
+for (const reason of ['Another Chrome profile is already connected']) {
+  test(`policy rejection shows "${reason}" and stops automatic retries`, async () => {
+    const { socket, message, stored, alarm, connections } = await setup();
+    await socket.onclose({ code: 1008, reason });
+    const state = await message({ type: 'status' });
+    assert.equal(state.enabled, false);
+    assert.ok(state.status.includes(reason));
+    assert.match(state.status, /click Connect to retry/);
+    assert.equal(stored.enabled, false);
+    assert.equal(stored.token, undefined);
+    assert.equal(stored.connectionError, state.status);
+    await alarm();
+    assert.equal(connections(), 1);
+    await message({ type: 'connect' });
+    assert.equal(connections(), 2);
+    assert.equal(stored.connectionError, undefined);
+  });
+}
+
+test('transient network closure continues automatic retries', async () => {
+  const { socket, message, alarm, connections } = await setup();
+  await socket.onclose({ code: 1006, reason: '' });
+  const state = await message({ type: 'status' });
+  assert.equal(state.enabled, true);
+  assert.match(state.status, /retrying automatically/);
+  await alarm();
+  assert.equal(connections(), 2);
+});
+
+test('persisted disconnect opts out of startup connection', async () => {
+  const { connections, message, alarm, stored } = await setup({ config: { enabled: false, token: 'legacy' } });
+  assert.equal(connections(), 0);
+  assert.equal(stored.token, undefined);
+  await alarm();
+  assert.equal(connections(), 0);
+  await message({ type: 'connect' });
+  assert.equal(connections(), 1);
+  assert.equal(stored.enabled, true);
+  assert.equal(stored.token, undefined);
 });
