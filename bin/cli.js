@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import { createBridge } from '../src/bridge.js';
 import { createClient, getPort, getToken } from '../src/client.js';
+import { readFile } from 'node:fs/promises';
 
 const help = `Usage: agent-browser-bridge <command>
 
   serve                    Start the local bridge and show the pairing token
   status                   Check whether Chrome is connected
   call <method> [JSON]     Send a browser command (params default to {})
+  call <method> --stdin    Read JSON params from standard input
+  call <method> --params-file <path>  Read UTF-8 JSON params from a file
   mcp                      Run the MCP server over stdio
 
 Environment: AGENT_BROWSER_PORT (default 19333), AGENT_BROWSER_TOKEN
@@ -32,8 +35,25 @@ async function main() {
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (!args[0]) throw new Error('Usage: agent-browser-bridge call <method> [JSON params]');
-  if (args.length > 2) throw new Error('Pass params as one quoted JSON argument');
-  const result = await client.call(args[0], args[1] ? JSON.parse(args[1]) : {});
+  let paramsText;
+  if (args[1] === '--stdin') {
+    if (args.length !== 2) throw new Error('Usage: call <method> --stdin');
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    paramsText = Buffer.concat(chunks).toString('utf8');
+  } else if (args[1] === '--params-file') {
+    if (args.length !== 3) throw new Error('Usage: call <method> --params-file <path>');
+    paramsText = await readFile(args[2], 'utf8');
+  } else {
+    if (args.length > 2) throw new Error('Pass params as one quoted JSON argument, or use --stdin');
+    paramsText = args[1];
+  }
+  let params = {};
+  if (paramsText !== undefined) {
+    try { params = JSON.parse(paramsText.replace(/^\uFEFF/, '')); }
+    catch { throw new Error('Invalid JSON params. Use --stdin or --params-file to avoid shell quoting issues.'); }
+  }
+  const result = await client.call(args[0], params);
   console.log(JSON.stringify(result, null, 2));
 }
 
