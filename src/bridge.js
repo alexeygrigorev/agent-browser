@@ -1,23 +1,18 @@
 import http from 'node:http';
-import { timingSafeEqual, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
-export function createBridge({ token, port = 19333, timeout = 30000 }) {
-  if (!token || token.length < 32) throw new Error('Token must have at least 32 characters');
+export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () => {} } = {}) {
   let browser;
   const pending = new Map();
-  const authorized = value => {
-    const a = Buffer.from(value || '');
-    const b = Buffer.from(token);
-    return a.length === b.length && timingSafeEqual(a, b);
-  };
+  const localHost = req => req.headers.host === `127.0.0.1:${server.address()?.port}`;
   const reply = (res, status, body) => {
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(body));
   };
   const server = http.createServer(async (req, res) => {
-    // Reject browser-origin HTTP calls, including requests from hostile websites.
-    if (req.headers.origin || !authorized(req.headers.authorization?.replace(/^Bearer /, ''))) return reply(res, 403, { error: 'Unauthorized' });
+    // Trust local agent processes, but reject website calls and DNS rebinding.
+    if (!localHost(req) || req.headers.origin || req.headers['sec-fetch-site']) return reply(res, 403, { error: 'Only local agent processes may call this bridge' });
     if (req.url === '/status' && req.method === 'GET') return reply(res, 200, { connected: browser?.readyState === WebSocket.OPEN });
     if (req.url !== '/command' || req.method !== 'POST') return reply(res, 404, { error: 'Not found' });
     try {
@@ -43,16 +38,26 @@ export function createBridge({ token, port = 19333, timeout = 30000 }) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
   server.on('upgrade', (req, socket, head) => {
     const origin = req.headers.origin || '';
-    if (req.url !== '/extension' || !/^chrome-extension:\/\/[a-p]{32}$/.test(origin)) { socket.destroy(); return; }
+    if (!localHost(req) || req.url !== '/extension' || !/^chrome-extension:\/\/[a-p]{32}$/.test(origin)) {
+      onDiagnostic({ event: 'connection_rejected', reason: 'Expected /extension and a Chrome extension origin' });
+      socket.destroy(); return;
+    }
     wss.handleUpgrade(req, socket, head, ws => {
-      let authenticated = false;
-      const authTimer = setTimeout(() => ws.close(1008, 'Authentication required'), 5000);
+      let ready = false;
+      const helloTimer = setTimeout(() => ws.close(1008, 'Extension handshake required'), 5000);
       ws.on('message', raw => {
         try {
           const message = JSON.parse(raw);
-          if (!authenticated) {
-            if (message.type !== 'auth' || !authorized(message.token) || browser) return ws.close(1008, 'Unauthorized or browser already connected');
-            authenticated = true; clearTimeout(authTimer); browser = ws;
+          if (!ready) {
+            // Accept the earlier extension's greeting during an in-place upgrade.
+            // Its obsolete token is ignored; all local agents are trusted.
+            if (!(message.type === 'hello' && message.protocol === 1) && message.type !== 'auth') return ws.close(1008, 'Unsupported extension protocol');
+            if (browser) {
+              onDiagnostic({ event: 'connection_rejected', reason: 'Another Chrome profile is already connected' });
+              return ws.close(1008, 'Another Chrome profile is already connected');
+            }
+            ready = true; clearTimeout(helloTimer); browser = ws;
+            onDiagnostic({ event: 'connected' });
             ws.send(JSON.stringify({ type: 'ready' })); return;
           }
           if (message.type === 'ping') { ws.send(JSON.stringify({ type: 'pong' })); return; }
@@ -62,9 +67,10 @@ export function createBridge({ token, port = 19333, timeout = 30000 }) {
       });
       ws.on('error', () => {});
       ws.on('close', () => {
-        clearTimeout(authTimer);
+        clearTimeout(helloTimer);
         if (browser !== ws) return;
         browser = undefined;
+        onDiagnostic({ event: 'disconnected' });
         for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Browser disconnected; action may have executed')); }
         pending.clear();
       });

@@ -1,37 +1,36 @@
 #!/usr/bin/env node
 import { createBridge } from '../src/bridge.js';
-import { createClient, getPort, getToken } from '../src/client.js';
+import { createClient, getPort } from '../src/client.js';
 import { readFile } from 'node:fs/promises';
 
 const help = `Usage: agent-browser-bridge <command>
 
-  serve                    Start the local bridge and show the pairing token
+  serve                    Start the local bridge; the extension connects automatically
   status                   Check whether Chrome is connected
   call <method> [JSON]     Send a browser command (params default to {})
   call <method> --stdin    Read JSON params from standard input
   call <method> --params-file <path>  Read UTF-8 JSON params from a file
   mcp                      Run the MCP server over stdio
 
-Environment: AGENT_BROWSER_PORT (default 19333), AGENT_BROWSER_TOKEN
+Environment: AGENT_BROWSER_PORT (default 19333)
 Example: agent-browser-bridge call tabs.list`;
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
   if (!['serve', 'status', 'call', 'mcp'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
-  const token = await getToken({ create: command === 'serve' });
   const port = getPort();
   if (command === 'serve') {
-    const bridge = createBridge({ token, port });
+    const bridge = createBridge({ port, onDiagnostic: event => console.error(`[browser-bridge] ${JSON.stringify(event)}`) });
     await bridge.listen();
-    console.log(`Browser bridge listening on http://127.0.0.1:${port}\nPairing token: ${token}\nPaste this token into the Chrome extension. Keep it private.`);
+    console.log(`Browser bridge listening on http://127.0.0.1:${port}\nThe installed Chrome extension connects automatically.`);
     let closing = false;
     const close = async () => { if (closing) return; closing = true; await bridge.close(); };
     process.once('SIGINT', close);
     process.once('SIGTERM', close);
     return;
   }
-  const client = createClient({ token, port });
+  const client = createClient({ port });
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (!args[0]) throw new Error('Usage: agent-browser-bridge call <method> [JSON params]');

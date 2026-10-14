@@ -5,50 +5,57 @@ import http from 'node:http';
 import { WebSocket } from 'ws';
 import { createBridge } from '../src/bridge.js';
 
-const token = 'test-token-012345678901234567890123456789';
 const origin = `chrome-extension://${'a'.repeat(32)}`;
 
 async function fixture(t, timeout = 2000) {
-  const bridge = createBridge({ token, port: 0, timeout });
+  const bridge = createBridge({ port: 0, timeout });
   const address = await bridge.listen();
   const base = `http://127.0.0.1:${address.port}`;
   t.after(() => bridge.close());
   const request = (path, options = {}) => fetch(`${base}${path}`, {
-    ...options, headers: { Authorization: `Bearer ${token}`, ...options.headers },
+    ...options,
   });
   const command = (method = 'tabs.list', params = {}) => request('/command', {
     method: 'POST', body: JSON.stringify({ method, params }),
   });
-  async function connect(authToken = token) {
+  async function connect(hello = { type: 'hello', protocol: 1 }) {
     const ws = new WebSocket(`${base.replace('http:', 'ws:')}/extension`, { origin });
     await once(ws, 'open');
     const response = Promise.race([
       once(ws, 'message').then(([raw]) => JSON.parse(raw)),
       once(ws, 'close').then(([code]) => ({ closed: code })),
     ]);
-    ws.send(JSON.stringify({ type: 'auth', token: authToken }));
+    ws.send(JSON.stringify(hello));
     return { ws, response: await response };
   }
   return { base, request, command, connect };
 }
 
-test('requires a sufficiently long token', () => {
-  assert.throws(() => createBridge({ token: 'short' }), /32/);
-});
-
-test('HTTP authentication and browser origins are rejected', async t => {
-  const { request } = await fixture(t);
-  assert.equal((await request('/status', { headers: { Authorization: 'Bearer wrong' } })).status, 403);
+test('local agents need no token; browser origins, fetch metadata, and rebound hosts are rejected', async t => {
+  const { request, base } = await fixture(t);
   assert.equal((await request('/status', { headers: { Origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await request('/status', { headers: { 'Sec-Fetch-Site': 'same-origin' } })).status, 403);
+  const reboundStatus = await new Promise((resolve, reject) => {
+    const req = http.get(`${base}/status`, { headers: { Host: 'evil.example' } }, res => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+  });
+  assert.equal(reboundStatus, 403);
+  assert.equal((await request('/command', { method: 'POST', headers: { Origin: 'null' }, body: '{}' })).status, 403);
   assert.deepEqual(await (await request('/status')).json(), { connected: false });
 });
 
-test('WebSocket requires an extension origin and correct authentication', async t => {
+test('WebSocket requires an extension origin and supported protocol', async t => {
   const { base, connect } = await fixture(t);
   const ws = new WebSocket(`${base.replace('http:', 'ws:')}/extension`, { origin: 'https://evil.example' });
   const [error] = await once(ws, 'error');
   assert.match(error.message, /socket hang up|Unexpected server response/);
-  assert.equal((await connect('wrong')).response.closed, 1008);
+  assert.equal((await connect({ type: 'hello', protocol: 999 })).response.closed, 1008);
+});
+
+test('already installed extensions can transition without their obsolete pairing token', async t => {
+  const { connect, request } = await fixture(t);
+  assert.equal((await connect({ type: 'auth' })).response.type, 'ready');
+  assert.deepEqual(await (await request('/status')).json(), { connected: true });
 });
 
 test('reports missing browser and rejects malformed commands', async t => {
@@ -71,7 +78,7 @@ test('preserves UTF-8 text when a character spans HTTP chunks', async t => {
   const body = Buffer.from(JSON.stringify({ method: 'page.type', params: { tabId: 1, text: value } }));
   const split = body.indexOf(Buffer.from('ü')) + 1;
   const response = await new Promise((resolve, reject) => {
-    const req = http.request(`${base}/command`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }, res => {
+    const req = http.request(`${base}/command`, { method: 'POST' }, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => resolve(JSON.parse(Buffer.concat(chunks))));

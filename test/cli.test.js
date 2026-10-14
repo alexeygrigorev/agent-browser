@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 function run(args, input, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/cli.js', import.meta.url)), ...args], {
-      env: { ...process.env, AGENT_BROWSER_TOKEN: 'cli-test-token', ...env }, stdio: ['pipe', 'pipe', 'pipe']
+      env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe']
     });
     let stdout = '', stderr = '';
     child.stdout.on('data', data => { stdout += data; });
@@ -21,6 +21,7 @@ function run(args, input, env = {}) {
 test('CLI stdin preserves JSON quotes, Unicode, and spaces through a real process', async t => {
   let received;
   const server = http.createServer(async (req, res) => {
+    assert.equal(req.headers.authorization, undefined);
     let body = '';
     for await (const chunk of req) body += chunk;
     received = JSON.parse(body);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createClient, getPort } from '../src/client.js';
 
-test('client authenticates, unwraps results, and reports browser errors', async t => {
+test('client needs no authentication, unwraps results, and reports browser errors', async t => {
   const requests = [];
   const server = http.createServer(async (req, res) => {
     requests.push({ url: req.url, authorization: req.headers.authorization });
@@ -17,12 +17,12 @@ test('client authenticates, unwraps results, and reports browser errors', async 
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const client = createClient({ token: 'test-token', port: server.address().port });
+  const client = createClient({ port: server.address().port });
   assert.deepEqual(await client.status(), { connected: true });
   assert.deepEqual(await client.call('tabs.list'), { method: 'tabs.list', params: {} });
   await assert.rejects(client.call('fail'), /No such tab/);
   await assert.rejects(client.call('tabs.list', []), /JSON object/);
-  assert.ok(requests.every(request => request.authorization === 'Bearer test-token'));
+  assert.ok(requests.every(request => request.authorization === undefined));
 });
 
 test('ports must be valid TCP ports', () => {
