@@ -34,8 +34,12 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
       } catch (error) {
         // Only an absent listener justifies launching. HTTP, protocol and timeout
         // failures belong to the running bridge and must not spawn another one.
-        if (error.cause?.cause?.code !== 'ECONNREFUSED') throw error;
-        if (!launched) { launched = true; await launcher(port); }
+        const code = error.cause?.cause?.code;
+        if (code === 'ECONNREFUSED') {
+          if (!launched) { launched = true; await launcher(port); }
+        } else if (!['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE'].includes(code)) {
+          throw error;
+        }
       }
       if (Date.now() < deadline) await delay(Math.min(200, deadline - Date.now()));
     } while (Date.now() < deadline);

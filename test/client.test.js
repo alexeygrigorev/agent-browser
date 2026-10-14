@@ -89,3 +89,21 @@ test('readiness probes respect the connection deadline when a listener hangs', a
   assert.ok(Date.now() - started < 1000);
   assert.equal(launches, 0);
 });
+
+test('readiness retries a reset status socket without launching or repeating the command', async t => {
+  let checks = 0, posts = 0, launches = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === '/status' && ++checks === 1) { req.socket.destroy(); return; }
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/status') return res.end(JSON.stringify({ connected: true }));
+    posts++;
+    res.end(JSON.stringify({ result: 'done' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = createClient({ port: server.address().port, autoStart: true, launcher: () => { launches++; } });
+  assert.equal(await client.call('page.click', { tabId: 1, selector: 'button' }), 'done');
+  assert.equal(checks, 2);
+  assert.equal(launches, 0);
+  assert.equal(posts, 1);
+});

@@ -15,7 +15,22 @@ import { createClient } from '../src/client.js';
 async function eventually(check, label) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
-    if (await check()) return;
+    try {
+      if (await check()) return;
+    } catch (error) {
+      // Readiness probes are GETs: restarting the bridge can invalidate a pooled
+      // socket. Retry only these transport failures, never assertions or HTTP errors.
+      let cause = error;
+      let transient = false;
+      while (cause) {
+        if (['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE', 'ECONNREFUSED'].includes(cause.code)) {
+          transient = true;
+          break;
+        }
+        cause = cause.cause;
+      }
+      if (!transient) throw error;
+    }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error(`Timed out waiting for ${label}`);
