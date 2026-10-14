@@ -4,8 +4,27 @@
   "description": "Control your logged-in Chrome from any agent through CLI, HTTP, or MCP",
   "type": "module",
   "license": "MIT",
-  "engines": { "node": ">=22" },
-  "bin": { "agent-browser-bridge": "bin/cli.js" },
-  "scripts": { "start": "node bin/cli.js serve", "test": "node --test", "check": "node --check src/bridge.js && node --check extension/background.js && node --check bin/cli.js" },
-  "dependencies": { "ws": "^8.18.0", "@modelcontextprotocol/sdk": "^1.0.0" }
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "agent-browser-bridge": "bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js serve",
+    "test": "node --test test/*.test.js extension/*.test.js",
+    "check": "node --check src/bridge.js && node --check extension/background.js && node --check bin/cli.js",
+    "test:browser": "node test/browser.e2e.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexeygrigorev/agent-browser.git"
+  }
 }
