@@ -1,25 +1,24 @@
 # Agent Browser Bridge
 
-Control your existing, signed-in Chrome from any agent that can run a shell command or connect to an MCP server. Install the unpacked extension in the Chrome profile you already use. It connects to a small authenticated service on your computer and controls that profile's existing tabs with their existing cookies and logins. You do not need a separate browser, a remote debugging launch flag, or to export cookies.
+Control your existing, signed-in Chrome from any agent that can run a shell command or connect to an MCP server. Install the unpacked extension in the Chrome profile you already use. It connects automatically to a local service and controls that profile's existing tabs with their existing cookies and logins. No token or pairing step is required. You do not need a separate browser, a remote debugging launch flag, or to export cookies.
 
-This is an early developer release. It is not published in the Chrome Web Store. Tests cover the local bridge and extension logic. The browser smoke test has passed through the actual CLI and MCP stdio interface with the unpacked extension in an isolated Chromium profile, including an existing HttpOnly cookie session. Individual agent configurations and your signed-in browser profile require separate validation.
+This is an early developer release. It is not published in the Chrome Web Store. Tests cover the local bridge and extension logic. The optional browser smoke test exercises the actual CLI and MCP stdio interface with the unpacked extension in an isolated Chromium profile, including an existing HttpOnly cookie session. Individual agent configurations and your signed-in browser profile require separate validation.
 
-## Install and pair
+## Install and start
 
 Requires Node.js 22 or newer and Chrome 120 or newer.
 
 1. Clone this repository and run `npm install` in its directory.
-2. Run `npm start` and leave it running. Copy the pairing token printed in the terminal.
+2. Run `npm start` and leave it running.
 3. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select this repository's `extension` directory.
-4. Open the extension popup, paste the token, and click **Connect**.
-5. In another terminal in the repository, run:
+4. The extension connects automatically. In another terminal in the repository, run:
 
 ```sh
 node bin/cli.js status
 node bin/cli.js call tabs.list '{}'
 ```
 
-The status should report `connected: true`. Use **Disconnect** in the popup to revoke the active browser connection, or stop the bridge process. Chrome displays its debugging indicator when a tab is being controlled.
+The status should report `connected: true`. Use **Disconnect** in the popup to stop browser access, and **Connect** to resume it. You can also stop the bridge process. Chrome displays its debugging indicator when a tab is being controlled.
 
 ## Use from an agent
 
@@ -69,7 +68,7 @@ A typical client configuration looks like this; exact configuration location and
 }
 ```
 
-On Windows, use an absolute Windows path with JSON-escaped backslashes, such as `C:\\Users\\you\\git\\agent-browser\\bin\\cli.js`. Run the bridge and MCP client as the same OS user so they can read the same saved token, or explicitly provide the same `AGENT_BROWSER_TOKEN` to both.
+On Windows, use an absolute Windows path with JSON-escaped backslashes, such as `C:\\Users\\you\\git\\agent-browser\\bin\\cli.js`. The MCP process connects directly to the local bridge without credentials.
 
 ## Browser commands
 
@@ -90,13 +89,11 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `page.screenshot` | `tabId`, `format?` (defaults to png), `quality?`, `fullPage?`; returns base64 `data` |
 | `cdp.send` | `tabId`, `method`, `params?`; sends a Chrome DevTools Protocol command |
 
-The token is stored at `~/.agent-browser/token` and reused across launches. The extension stores its paired token locally until you disconnect. Set `AGENT_BROWSER_TOKEN` to override the service/client token when needed.
-
 ## Trust and limitations
 
-The pairing token grants powerful access to your signed-in browser. Give it only to trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action.
+Any local process that can reach the running bridge can control the connected browser. Use it on a trusted computer with trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action. Disconnect the extension or stop the bridge when you want browser access disabled.
 
-The bridge binds to `127.0.0.1` and rejects browser-origin HTTP requests. Extension WebSockets require a Chrome extension origin and the token. Only one authenticated extension may connect at once. These checks do not protect against a malicious local process that obtains the token. Do not expose the service through a proxy, tunnel, or public interface.
+The bridge binds to `127.0.0.1`, requires the expected loopback Host, and rejects HTTP requests carrying an Origin header. Extension WebSockets require a Chrome extension origin and a `hello` handshake with protocol version `1`. One extension may connect at once. A legacy `auth` handshake is accepted temporarily so an already installed extension can transition; its token is not validated. These checks restrict website access and do not authenticate local processes. Do not expose the service through a proxy, tunnel, or public interface.
 
 Chrome restricts debugging of internal pages and some protected tabs. Other debuggers, including DevTools, can interfere with attachment. Browser command failures and disconnects can occur after an action has already executed; inspect the page before retrying a consequential command.
 
@@ -119,6 +116,6 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It pairs through the actual popup, launches the CLI and an MCP stdio client, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types Unicode text and clicks, evaluates the result, receives a PNG as MCP image content, and verifies disconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
+On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It checks automatic connection before opening the popup, launches the CLI and an MCP stdio client, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types Unicode text and clicks, evaluates the result, receives a PNG as MCP image content, and verifies disconnect and reconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
 
 MIT licensed. See [LICENSE](LICENSE).

@@ -1,6 +1,5 @@
 // Explicit opt-in: npm run test:browser. Uses a disposable profile, never your Chrome profile.
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
@@ -23,8 +22,8 @@ async function eventually(check, label) {
 }
 
 const profile = await mkdtemp(join(tmpdir(), 'agent-browser-e2e-'));
-const token = randomBytes(32).toString('hex');
-const childEnv = { ...process.env, AGENT_BROWSER_TOKEN: token, AGENT_BROWSER_PORT: '19333' };
+const childEnv = { ...process.env, AGENT_BROWSER_PORT: '19333' };
+delete childEnv.AGENT_BROWSER_TOKEN;
 async function cli(args, input) {
   const child = spawn(process.execPath, [resolve('bin/cli.js'), ...args], {
     env: childEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
@@ -41,7 +40,7 @@ async function cli(args, input) {
     return JSON.parse(stdout);
   } finally { clearTimeout(timeout); }
 }
-const bridge = createBridge({ token, port: 19333 });
+const bridge = createBridge({ port: 19333 });
 const fixture = http.createServer((req, res) => {
   if (req.url === '/login') {
     res.writeHead(302, { 'Set-Cookie': 'session=e2e-authenticated; HttpOnly; SameSite=Strict; Path=/', Location: '/' });
@@ -75,12 +74,11 @@ try {
   });
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   const extensionId = new URL(worker.url()).host;
+  const client = createClient();
+  await eventually(async () => (await client.status()).connected, 'automatic extension connection without opening popup');
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-  await popup.locator('#token').fill(token);
-  await popup.locator('#connect').click();
-  const client = createClient({ token });
-  await eventually(async () => (await client.status()).connected, 'extension pairing');
+  assert.equal(await popup.locator('input').count(), 0, 'popup requires no token input');
   await eventually(async () => (await popup.locator('#status').textContent()).includes('browser control enabled'), 'popup connected status');
   if (process.env.AGENT_BROWSER_E2E_SCREENSHOT) {
     await popup.screenshot({ path: resolve(process.env.AGENT_BROWSER_E2E_SCREENSHOT) });
@@ -139,7 +137,10 @@ try {
   await assert.rejects(client.call('tabs.list'), /Connect the Chrome extension first/);
   const disconnected = await mcp.callTool({ name: 'tabs_list', arguments: {} });
   assert.equal(disconnected.isError, true, 'MCP reports revoked browser access');
-  console.log('Browser E2E passed: actual CLI and MCP stdio, pairing, existing tab discovery, HttpOnly cookie session, snapshot, Unicode type, click, evaluate, MCP PNG image, disconnect.');
+  await popup.locator('#connect').click();
+  await eventually(async () => (await client.status()).connected, 'reconnection without credentials');
+  assert.ok((await textTool('tabs_list')).some(tab => tab.id === tabId), 'MCP works after reconnecting');
+  console.log('Browser E2E passed: automatic tokenless connection, actual CLI and MCP stdio, existing tab discovery, HttpOnly cookie session, snapshot, Unicode type, click, evaluate, MCP PNG image, disconnect and reconnect.');
 } finally {
   await mcp?.close();
   await context?.close();
