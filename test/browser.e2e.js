@@ -1,12 +1,15 @@
 // Explicit opt-in: npm run test:browser. Uses a disposable profile, never your Chrome profile.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createBridge } from '../src/bridge.js';
 import { createClient } from '../src/client.js';
 
@@ -21,6 +24,23 @@ async function eventually(check, label) {
 
 const profile = await mkdtemp(join(tmpdir(), 'agent-browser-e2e-'));
 const token = randomBytes(32).toString('hex');
+const childEnv = { ...process.env, AGENT_BROWSER_TOKEN: token, AGENT_BROWSER_PORT: '19333' };
+async function cli(args, input) {
+  const child = spawn(process.execPath, [resolve('bin/cli.js'), ...args], {
+    env: childEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { stderr += data; });
+  const timeout = setTimeout(() => child.kill(), 15000);
+  child.stdin.end(input);
+  try {
+    const [code] = await once(child, 'close');
+    assert.equal(code, 0, `CLI ${args.join(' ')} failed: ${stderr}`);
+    return JSON.parse(stdout);
+  } finally { clearTimeout(timeout); }
+}
 const bridge = createBridge({ token, port: 19333 });
 const fixture = http.createServer((req, res) => {
   if (req.url === '/login') {
@@ -42,6 +62,7 @@ const fixture = http.createServer((req, res) => {
     <p id="result">Waiting</p>`);
 });
 let context;
+let mcp;
 try {
   await bridge.listen();
   fixture.listen(0, '127.0.0.1');
@@ -66,6 +87,9 @@ try {
   }
   const page = await context.newPage();
   await page.goto(`${url}login`);
+  assert.deepEqual(await cli(['status']), { connected: true });
+  const cliTabs = await cli(['call', 'tabs.list', '{}']);
+  assert.ok(cliTabs.some(tab => tab.url === url), 'actual CLI discovers the signed-in fixture tab');
   const tabs = await client.call('tabs.list');
   const tab = tabs.find(tab => tab.url === url);
   assert.ok(tab, 'extension discovers existing fixture tab');
@@ -80,11 +104,44 @@ try {
   assert.equal(await client.call('page.evaluate', { tabId, expression: 'document.querySelector("#result").textContent' }), 'Hello Browser Agent');
   const screenshot = await client.call('page.screenshot', { tabId });
   assert.equal(Buffer.from(screenshot.data, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  const cliSnapshot = await cli(['call', 'page.snapshot', '--stdin'], JSON.stringify({ tabId }));
+  assert.equal(cliSnapshot.title, 'Agent Browser E2E', 'CLI stdin reaches the real extension');
+  mcp = new Client({ name: 'browser-e2e', version: '1.0.0' });
+  await mcp.connect(new StdioClientTransport({
+    command: process.execPath, args: [resolve('bin/cli.js'), 'mcp'], env: childEnv, stderr: 'pipe',
+  }));
+  const definitions = await mcp.listTools();
+  for (const name of ['tabs_list', 'page_snapshot', 'page_type', 'page_click', 'page_evaluate', 'page_screenshot']) {
+    assert.ok(definitions.tools.some(tool => tool.name === name), `MCP advertises ${name}`);
+  }
+  async function tool(name, args = {}) {
+    const result = await mcp.callTool({ name, arguments: args });
+    assert.ok(!result.isError, `MCP ${name} failed: ${JSON.stringify(result.content)}`);
+    return result.content;
+  }
+  async function textTool(name, args) {
+    const content = await tool(name, args);
+    assert.equal(content[0].type, 'text');
+    return JSON.parse(content[0].text);
+  }
+  assert.ok((await textTool('tabs_list')).some(tab => tab.id === tabId));
+  assert.equal((await textTool('page_snapshot', { tabId })).title, 'Agent Browser E2E');
+  assert.equal(await textTool('page_evaluate', { tabId, expression: 'fetch("/private").then(response => response.text())' }), 'Existing browser session authenticated', 'MCP reuses the existing HttpOnly cookie session');
+  await textTool('page_type', { tabId, selector: '#name', text: 'MCP Agent café "quoted"' });
+  await textTool('page_click', { tabId, selector: '#submit' });
+  assert.equal(await textTool('page_evaluate', { tabId, expression: 'document.querySelector("#result").textContent' }), 'Hello MCP Agent café "quoted"');
+  const mcpScreenshot = (await tool('page_screenshot', { tabId }))[0];
+  assert.equal(mcpScreenshot.type, 'image');
+  assert.equal(mcpScreenshot.mimeType, 'image/png');
+  assert.equal(Buffer.from(mcpScreenshot.data, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
   await popup.locator('#disconnect').click();
   await eventually(async () => !(await client.status()).connected, 'extension disconnect');
   await assert.rejects(client.call('tabs.list'), /Connect the Chrome extension first/);
-  console.log('Browser E2E passed: pairing, existing tab discovery, HttpOnly cookie session, snapshot, type, click, evaluate, PNG screenshot, disconnect.');
+  const disconnected = await mcp.callTool({ name: 'tabs_list', arguments: {} });
+  assert.equal(disconnected.isError, true, 'MCP reports revoked browser access');
+  console.log('Browser E2E passed: actual CLI and MCP stdio, pairing, existing tab discovery, HttpOnly cookie session, snapshot, Unicode type, click, evaluate, MCP PNG image, disconnect.');
 } finally {
+  await mcp?.close();
   await context?.close();
   await bridge.close();
   await new Promise(resolve => fixture.close(resolve));

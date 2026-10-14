@@ -2,7 +2,7 @@
 
 Control your existing, signed-in Chrome from any agent that can run a shell command or connect to an MCP server. Install the unpacked extension in the Chrome profile you already use. It connects to a small authenticated service on your computer and controls that profile's existing tabs with their existing cookies and logins. You do not need a separate browser, a remote debugging launch flag, or to export cookies.
 
-This is an early developer release. It is not published in the Chrome Web Store. Tests cover the local bridge and extension logic. The browser smoke test has passed with the unpacked extension in an isolated Chromium profile, including an existing HttpOnly cookie session. Agent-specific interoperability and your signed-in browser profile require separate validation.
+This is an early developer release. It is not published in the Chrome Web Store. Tests cover the local bridge and extension logic. The browser smoke test has passed through the actual CLI and MCP stdio interface with the unpacked extension in an isolated Chromium profile, including an existing HttpOnly cookie session. Individual agent configurations and your signed-in browser profile require separate validation.
 
 ## Install and pair
 
@@ -119,6 +119,6 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It pairs through the actual popup, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types and clicks, evaluates the result, captures a PNG, and verifies disconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
+On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It pairs through the actual popup, launches the CLI and an MCP stdio client, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types Unicode text and clicks, evaluates the result, receives a PNG as MCP image content, and verifies disconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
 
 MIT licensed. See [LICENSE](LICENSE).
