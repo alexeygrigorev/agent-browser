@@ -22,6 +22,7 @@ test('CLI stdin preserves JSON quotes, Unicode, and spaces through a real proces
   let received;
   const server = http.createServer(async (req, res) => {
     assert.equal(req.headers.authorization, undefined);
+    if (req.url === '/status') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ connected: true })); return; }
     let body = '';
     for await (const chunk of req) body += chunk;
     received = JSON.parse(body);

@@ -12,6 +12,8 @@ const help = `Usage: agent-browser-bridge <command>
   call <method> --params-file <path>  Read UTF-8 JSON params from a file
   mcp                      Run the MCP server over stdio
 
+call and mcp start the local bridge automatically when needed.
+
 Environment: AGENT_BROWSER_PORT (default 19333)
 Example: agent-browser-bridge call tabs.list`;
 
@@ -22,7 +24,8 @@ async function main() {
   const port = getPort();
   if (command === 'serve') {
     const bridge = createBridge({ port, onDiagnostic: event => console.error(`[browser-bridge] ${JSON.stringify(event)}`) });
-    await bridge.listen();
+    try { await bridge.listen(); }
+    catch (error) { if (error.code === 'EADDRINUSE') return; throw error; }
     console.log(`Browser bridge listening on http://127.0.0.1:${port}\nThe installed Chrome extension connects automatically.`);
     let closing = false;
     const close = async () => { if (closing) return; closing = true; await bridge.close(); };
@@ -30,7 +33,7 @@ async function main() {
     process.once('SIGTERM', close);
     return;
   }
-  const client = createClient({ port });
+  const client = createClient({ port, autoStart: command === 'call' || command === 'mcp' });
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (!args[0]) throw new Error('Usage: agent-browser-bridge call <method> [JSON params]');

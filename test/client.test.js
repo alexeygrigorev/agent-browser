@@ -29,3 +29,63 @@ test('ports must be valid TCP ports', () => {
   assert.equal(getPort('19333'), 19333);
   for (const port of ['0', '65536', 'abc', '1.5']) assert.throws(() => getPort(port));
 });
+
+test('automatic readiness waits for Chrome, preserves status observation, and never retries POST', async t => {
+  let checks = 0, posts = 0, launches = 0;
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/status') return res.end(JSON.stringify({ connected: ++checks >= 3 }));
+    posts++;
+    res.writeHead(502);
+    res.end(JSON.stringify({ error: 'Action may have executed' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = createClient({ port: server.address().port, autoStart: true, launcher: () => { launches++; } });
+  assert.deepEqual(await client.status(), { connected: false });
+  await assert.rejects(client.call('page.click', { tabId: 1, selector: 'button' }), /may have executed/);
+  assert.equal(posts, 1);
+  assert.equal(launches, 0);
+  assert.equal(checks, 3);
+});
+
+test('automatic readiness reports a paused or closed Chrome without sending a command', async t => {
+  let posts = 0;
+  const server = http.createServer((req, res) => {
+    if (req.method === 'POST') posts++;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ connected: false }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = createClient({ port: server.address().port, autoStart: true, connectTimeout: 50 });
+  await assert.rejects(client.call('tabs.list'), /Open Chrome.*not paused/);
+  assert.equal(posts, 0);
+});
+
+test('an HTTP rejection never launches a bridge or sends a command', async t => {
+  let launches = 0, posts = 0;
+  const server = http.createServer((req, res) => {
+    if (req.method === 'POST') posts++;
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Forbidden by running service' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = createClient({ port: server.address().port, autoStart: true, launcher: () => { launches++; } });
+  await assert.rejects(client.call('tabs.list'), /Forbidden by running service/);
+  assert.equal(launches, 0);
+  assert.equal(posts, 0);
+});
+
+test('readiness probes respect the connection deadline when a listener hangs', async t => {
+  let launches = 0;
+  const server = http.createServer(() => {});
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  const client = createClient({ port: server.address().port, autoStart: true, connectTimeout: 50, launcher: () => { launches++; } });
+  const started = Date.now();
+  await assert.rejects(client.call('tabs.list'), /Cannot reach browser bridge/);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(launches, 0);
+});
