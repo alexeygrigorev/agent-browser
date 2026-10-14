@@ -21,12 +21,14 @@ export function createBridge({ token, port = 19333, timeout = 30000 }) {
     if (req.url === '/status' && req.method === 'GET') return reply(res, 200, { connected: browser?.readyState === WebSocket.OPEN });
     if (req.url !== '/command' || req.method !== 'POST') return reply(res, 404, { error: 'Not found' });
     try {
-      let body = '';
+      const chunks = [];
+      let bytes = 0;
       for await (const chunk of req) {
-        body += chunk;
-        if (Buffer.byteLength(body) > 1024 * 1024) { reply(res, 413, { error: 'Request too large' }); return; }
+        bytes += chunk.length;
+        if (bytes > 1024 * 1024) { reply(res, 413, { error: 'Request too large' }); return; }
+        chunks.push(chunk);
       }
-      const command = JSON.parse(body);
+      const command = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (!command || typeof command !== 'object' || typeof command.method !== 'string' || !command.method || !command.params || typeof command.params !== 'object' || Array.isArray(command.params)) return reply(res, 400, { error: 'Expected method and params object' });
       if (browser?.readyState !== WebSocket.OPEN) return reply(res, 503, { error: 'Connect the Chrome extension first' });
       const id = randomUUID();

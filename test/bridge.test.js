@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import http from 'node:http';
 import { WebSocket } from 'ws';
 import { createBridge } from '../src/bridge.js';
 
@@ -53,10 +54,34 @@ test('WebSocket requires an extension origin and correct authentication', async 
 test('reports missing browser and rejects malformed commands', async t => {
   const { command, request } = await fixture(t);
   assert.equal((await command()).status, 503);
-  for (const body of ['{', '{}', '{"method":"tabs.list","params":[]}']) {
+  for (const body of ['{', '{}', 'null', '{"method":"","params":{}}', '{"method":"tabs.list","params":[]}']) {
     assert.equal((await request('/command', { method: 'POST', body })).status, 400);
   }
   assert.equal((await request('/unknown')).status, 404);
+});
+
+test('preserves UTF-8 text when a character spans HTTP chunks', async t => {
+  const { connect, base } = await fixture(t);
+  const { ws } = await connect();
+  ws.on('message', raw => {
+    const message = JSON.parse(raw);
+    ws.send(JSON.stringify({ id: message.id, result: message.params.text }));
+  });
+  const value = 'Grüße 世界 🌍';
+  const body = Buffer.from(JSON.stringify({ method: 'page.type', params: { tabId: 1, text: value } }));
+  const split = body.indexOf(Buffer.from('ü')) + 1;
+  const response = await new Promise((resolve, reject) => {
+    const req = http.request(`${base}/command`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve(JSON.parse(Buffer.concat(chunks))));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.write(body.subarray(0, split));
+    setTimeout(() => req.end(body.subarray(split)), 30);
+  });
+  assert.equal(response.result, value);
 });
 
 test('roundtrips commands and extension errors, and rejects duplicate browsers', async t => {
