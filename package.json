@@ -1,0 +1,11 @@
+{
+  "name": "agent-browser-bridge",
+  "version": "0.1.0",
+  "description": "Control your logged-in Chrome from any agent through CLI, HTTP, or MCP",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "bin": { "agent-browser-bridge": "bin/cli.js" },
+  "scripts": { "start": "node bin/cli.js serve", "test": "node --test", "check": "node --check src/bridge.js && node --check extension/background.js && node --check bin/cli.js" },
+  "dependencies": { "ws": "^8.18.0", "@modelcontextprotocol/sdk": "^1.0.0" }
+}
