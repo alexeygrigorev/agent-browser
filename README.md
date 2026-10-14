@@ -20,6 +20,8 @@ node bin/cli.js call tabs.list '{}'
 
 The status should report `connected: true`. Use **Disconnect** in the popup to stop browser access, and **Connect** to resume it. You can also stop the bridge process. Chrome displays its debugging indicator when a tab is being controlled.
 
+If updating an older unpacked extension, reload it once in `chrome://extensions` to refresh its popup and service worker. No pairing token is needed.
+
 ## Use from an agent
 
 Give any shell-capable agent the absolute path to this checkout and tell it to run commands such as:
@@ -117,5 +119,7 @@ npm run test:browser
 ```
 
 On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It checks automatic connection before opening the popup, launches the CLI and an MCP stdio client, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types Unicode text and clicks, evaluates the result, receives a PNG as MCP image content, and verifies disconnect and reconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
+
+To verify a Chrome profile that is already connected, run `npm run test:connected`. This opens a temporary local test page, exercises page actions and navigation, and closes its tab afterward. It leaves other tabs and cookies unchanged. Navigation commands return before the destination finishes loading; wait for the tab's `status` to become `complete` before interacting with it, and allow asynchronous page updates to finish before checking their results.
 
 MIT licensed. See [LICENSE](LICENSE).
