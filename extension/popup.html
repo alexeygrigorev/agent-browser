@@ -2,6 +2,6 @@
 <html lang="en"><head><meta charset="utf-8"><title>Agent Browser Bridge</title><link rel="stylesheet" href="popup.css"></head>
 <body><h1>Agent Browser Bridge</h1><p id="status" role="status">Checking connection…</p>
 <p>Connects automatically to the local bridge. While connected, local agents can read and control your signed-in tabs.</p>
-<div><button id="connect">Connect</button><button id="disconnect">Disconnect</button></div>
-<p class="detail">Local bridge: 127.0.0.1:19333. Chrome displays a debugging banner when a tab is controlled. Disconnect stops access and detaches controlled tabs.</p>
+<div><button id="connect">Resume</button><button id="disconnect">Pause</button></div>
+<p class="detail">Local bridge: 127.0.0.1:19333. Chrome displays a debugging banner when a tab is controlled. Pause stops access and detaches controlled tabs. Connection and recovery are automatic.</p>
 <script src="popup.js" type="module"></script></body></html>

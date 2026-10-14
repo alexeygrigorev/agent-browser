@@ -10,6 +10,8 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   let socket;
   let alarm;
   let connections = 0;
+  let timerId = 0;
+  const timers = new Map();
   const chrome = {
     storage: { local: {
       get: async () => ({ ...stored }), set: async value => Object.assign(stored, value),
@@ -41,10 +43,21 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
     send(value) { this.sent.push(JSON.parse(value)); }
     close() { this.readyState = 3; this.onclose?.(); }
   }
-  const context = vm.createContext({ chrome, WebSocket, setInterval: () => 1, clearInterval() {} });
+  const context = vm.createContext({ chrome, WebSocket, setInterval: () => 1, clearInterval() {},
+    setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; },
+    clearTimeout: id => timers.delete(id)
+  });
   vm.runInContext(await readFile(new URL('./background.js', import.meta.url), 'utf8'), context);
   await new Promise(resolve => setImmediate(resolve));
   return { calls, stored, socket,
+    currentSocket: () => socket,
+    timers,
+    runTimer: async delay => {
+      const entry = [...timers].find(([, timer]) => timer.delay === delay);
+      assert.ok(entry, `Expected timer for ${delay}ms`);
+      timers.delete(entry[0]);
+      await entry[1].fn();
+    },
     alarm: () => alarm({ name: 'reconnect' }),
     connections: () => connections,
     command: async (method, params = {}) => {
@@ -128,19 +141,16 @@ test('full-page screenshots request document dimensions', async () => {
 });
 
 for (const reason of ['Another Chrome profile is already connected']) {
-  test(`policy rejection shows "${reason}" and stops automatic retries`, async () => {
-    const { socket, message, stored, alarm, connections } = await setup();
+  test(`policy rejection shows "${reason}" and retries automatically`, async () => {
+    const { socket, message, stored, runTimer, connections } = await setup();
     await socket.onclose({ code: 1008, reason });
     const state = await message({ type: 'status' });
-    assert.equal(state.enabled, false);
+    assert.equal(state.enabled, true);
     assert.ok(state.status.includes(reason));
-    assert.match(state.status, /click Connect to retry/);
-    assert.equal(stored.enabled, false);
+    assert.match(state.status, /retrying automatically/);
+    assert.equal(stored.enabled, true);
     assert.equal(stored.token, undefined);
-    assert.equal(stored.connectionError, state.status);
-    await alarm();
-    assert.equal(connections(), 1);
-    await message({ type: 'connect' });
+    await runTimer(1000);
     assert.equal(connections(), 2);
     assert.equal(stored.connectionError, undefined);
   });
@@ -166,4 +176,45 @@ test('persisted disconnect opts out of startup connection', async () => {
   assert.equal(connections(), 1);
   assert.equal(stored.enabled, true);
   assert.equal(stored.token, undefined);
+});
+
+test('retry backoff caps at five seconds and resets after ready', async () => {
+  const { currentSocket, runTimer, connections } = await setup();
+  for (const delay of [1000, 2000, 4000, 5000, 5000]) {
+    await currentSocket().onclose({ code: 1006 });
+    await runTimer(delay);
+  }
+  assert.equal(connections(), 6);
+  await currentSocket().onmessage({ data: JSON.stringify({ type: 'ready' }) });
+  await currentSocket().onclose({ code: 1006 });
+  await runTimer(1000);
+  assert.equal(connections(), 7);
+});
+
+test('handshake watchdog retries a stuck socket automatically', async () => {
+  const { runTimer, connections, socket } = await setup();
+  await runTimer(10000);
+  assert.equal(socket.readyState, 3);
+  await runTimer(1000);
+  assert.equal(connections(), 2);
+});
+
+test('explicit pause cancels scheduled reconnect and watchdog', async () => {
+  const { socket, message, timers, alarm, connections, stored } = await setup();
+  await socket.onclose({ code: 1006 });
+  await message({ type: 'disconnect' });
+  assert.equal(timers.size, 0);
+  assert.equal(stored.paused, true);
+  await alarm();
+  assert.equal(connections(), 1);
+});
+
+test('old policy failure auto-recovers but explicit pause remains respected', async () => {
+  const legacy = await setup({ config: { enabled: false, connectionError: 'Another profile connected' } });
+  assert.equal(legacy.connections(), 1);
+  assert.equal(legacy.stored.enabled, true);
+  assert.equal(legacy.stored.connectionError, undefined);
+  const paused = await setup({ config: { enabled: false, paused: true, connectionError: 'Old failure' } });
+  assert.equal(paused.connections(), 0);
+  assert.equal((await paused.message({ type: 'status' })).status, 'Paused');
 });

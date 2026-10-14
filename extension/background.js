@@ -3,15 +3,22 @@ let socket;
 let enabled = false;
 let status = 'Disconnected';
 let heartbeat;
+let reconnectTimer;
+let handshakeTimer;
+let retryDelay = 1000;
 let generation = 0;
 let activeGeneration = 0;
 let commandQueue = Promise.resolve();
 const attached = new Set();
 const initializing = new Map();
-const startup = chrome.storage.local.get(['enabled', 'connectionError']).then(async config => {
+const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError']).then(async config => {
   await chrome.storage.local.remove('token');
-  enabled = config.enabled !== false;
-  if (!enabled && config.connectionError) status = config.connectionError;
+  enabled = config.paused !== true && (config.enabled !== false || !!config.connectionError);
+  if (enabled && config.connectionError) {
+    await chrome.storage.local.set({ enabled: true });
+    await chrome.storage.local.remove('connectionError');
+  }
+  if (!enabled) status = 'Paused';
   if (enabled) connect();
 });
 
@@ -129,13 +136,21 @@ async function dispatch(method, params = {}) {
 
 function connect() {
   if (!enabled || socket) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
   status = 'Connecting…';
   const ws = socket = new WebSocket(ENDPOINT);
   ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', protocol: 1 }));
   ws.onmessage = async event => {
+    if (socket !== ws || !enabled) return;
     let message;
     try { message = JSON.parse(event.data); } catch { ws.close(); return; }
-    if (message.type === 'ready') { status = 'Connected — browser control enabled'; return; }
+    if (message.type === 'ready') {
+      clearTimeout(handshakeTimer);
+      retryDelay = 1000;
+      status = 'Connected — browser control enabled';
+      return;
+    }
     if (message.type === 'pong') return;
     if (!enabled || !message.id || typeof message.method !== 'string') return;
     const requestedGeneration = generation;
@@ -153,32 +168,40 @@ function connect() {
     }
   };
   ws.onerror = () => { status = 'Bridge unavailable; retrying automatically'; };
-  ws.onclose = async event => {
+  ws.onclose = event => {
     if (socket !== ws) return;
     socket = undefined;
+    generation++;
     clearInterval(heartbeat);
-    if (enabled && event?.code === 1008) {
+    clearTimeout(handshakeTimer);
+    if (!enabled) { status = 'Paused'; return; }
+    if (event?.code === 1008) {
       const reason = event.reason || 'Bridge rejected the connection';
-      await disconnect();
-      status = `Connection rejected: ${reason}. Check other Chrome profiles, then click Connect to retry.`;
-      await chrome.storage.local.set({ connectionError: status });
-      return;
-    }
-    status = enabled ? 'Bridge disconnected; retrying automatically' : 'Disconnected';
+      status = `Connection rejected: ${reason}; retrying automatically`;
+    } else status = 'Bridge disconnected; retrying automatically';
+    reconnectTimer = setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 5000);
   };
+  handshakeTimer = setTimeout(() => {
+    if (socket !== ws) return;
+    ws.onclose({ code: 1006 });
+    ws.close();
+  }, 10000);
   clearInterval(heartbeat);
   heartbeat = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' })); }, 20000);
 }
 async function disconnect() {
   enabled = false;
   generation++;
-  await chrome.storage.local.set({ enabled: false });
+  await chrome.storage.local.set({ enabled: false, paused: true });
   await chrome.storage.local.remove('token');
   await chrome.storage.local.remove('connectionError');
   clearInterval(heartbeat);
+  clearTimeout(reconnectTimer);
+  clearTimeout(handshakeTimer);
   socket?.close();
   socket = undefined;
-  status = 'Disconnected';
+  status = 'Paused';
   await Promise.allSettled([...initializing.values()]);
   await Promise.allSettled([...attached].map(tabId => chrome.debugger.detach({ tabId })));
   attached.clear();
@@ -197,7 +220,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (message.type === 'connect') {
       await disconnect();
       enabled = true;
-      await chrome.storage.local.set({ enabled: true });
+      retryDelay = 1000;
+      await chrome.storage.local.set({ enabled: true, paused: false });
       connect();
     }
     reply({ enabled, status });

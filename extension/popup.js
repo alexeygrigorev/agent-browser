@@ -3,6 +3,7 @@ async function refresh() {
   const state = await chrome.runtime.sendMessage({ type: 'status' });
   status.textContent = state.status;
   document.querySelector('#disconnect').disabled = !state.enabled;
+  document.querySelector('#connect').disabled = state.enabled;
 }
 document.querySelector('#connect').addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ type: 'connect' });
