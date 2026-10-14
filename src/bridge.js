@@ -27,13 +27,13 @@ export function createBridge({ token, port = 19333, timeout = 30000 }) {
         if (Buffer.byteLength(body) > 1024 * 1024) { reply(res, 413, { error: 'Request too large' }); return; }
       }
       const command = JSON.parse(body);
-      if (typeof command.method !== 'string' || !command.params || typeof command.params !== 'object' || Array.isArray(command.params)) return reply(res, 400, { error: 'Expected method and params object' });
+      if (!command || typeof command !== 'object' || typeof command.method !== 'string' || !command.method || !command.params || typeof command.params !== 'object' || Array.isArray(command.params)) return reply(res, 400, { error: 'Expected method and params object' });
       if (browser?.readyState !== WebSocket.OPEN) return reply(res, 503, { error: 'Connect the Chrome extension first' });
       const id = randomUUID();
       const result = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => { pending.delete(id); reject(new Error('Browser command timed out; action may have executed')); }, timeout);
         pending.set(id, { resolve, reject, timer });
-        browser.send(JSON.stringify({ id, ...command, id }));
+        browser.send(JSON.stringify({ method: command.method, params: command.params, id }));
       });
       reply(res, 200, result);
     } catch (error) { reply(res, error instanceof SyntaxError ? 400 : 502, { error: error.message }); }
