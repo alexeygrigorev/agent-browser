@@ -9,16 +9,15 @@ This is an early developer release. It is not published in the Chrome Web Store.
 Requires Node.js 22 or newer and Chrome 120 or newer.
 
 1. Clone this repository and run `npm install` in its directory.
-2. Run `npm start` and leave it running.
-3. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select this repository's `extension` directory.
-4. The extension connects automatically. In another terminal in the repository, run:
+2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select this repository's `extension` directory.
+3. Run a browser command. It starts the local bridge if needed and waits for the extension to connect automatically:
 
 ```sh
-node bin/cli.js status
 node bin/cli.js call tabs.list '{}'
+node bin/cli.js status
 ```
 
-The status should report `connected: true`. Use **Disconnect** in the popup to stop browser access, and **Connect** to resume it. You can also stop the bridge process. Chrome displays its debugging indicator when a tab is being controlled.
+No popup interaction is needed for normal use. Browser commands wait up to 35 seconds for the installed extension; `status` reports the current state without starting a bridge. `npm start` remains available to run the bridge in the foreground. Use **Pause** in the popup to explicitly pause browser access, and **Resume** after that deliberate pause. Temporary connection failures and bridge restarts reconnect automatically. Chrome displays its debugging indicator when a tab is being controlled.
 
 If updating an older unpacked extension, reload it once in `chrome://extensions` to refresh its popup and service worker. No pairing token is needed.
 
@@ -30,7 +29,7 @@ Give any shell-capable agent the absolute path to this checkout and tell it to r
 node /absolute/path/to/agent-browser/bin/cli.js call tabs.list '{}'
 ```
 
-For an agent launched with `zcy`, start the bridge and connect Chrome first, then launch your usual `zcy` session and give the agent the checkout path and command above. No special `zcy` flags or browser-specific integration are required. Its execution environment must have access to Node.js and this local bridge.
+For an agent launched with `zcy`, install the extension once, then launch your usual `zcy` session and give the agent the checkout path and command above. Its first browser command starts the bridge and waits for Chrome automatically. No special `zcy` flags or browser-specific integration are required. Its execution environment must have access to Node.js and this local bridge.
 
 PowerShell can invoke the CLI directly:
 
@@ -51,7 +50,7 @@ For non-ASCII parameters on Windows PowerShell 5.1, save the JSON as UTF-8 and u
 
 ## MCP
 
-Keep `npm start` running separately. Configure your agent's stdio MCP client to launch:
+Configure your agent's stdio MCP client to launch:
 
 ```sh
 node /absolute/path/to/agent-browser/bin/cli.js mcp
@@ -70,7 +69,7 @@ A typical client configuration looks like this; exact configuration location and
 }
 ```
 
-On Windows, use an absolute Windows path with JSON-escaped backslashes, such as `C:\\Users\\you\\git\\agent-browser\\bin\\cli.js`. The MCP process connects directly to the local bridge without credentials.
+On Windows, use an absolute Windows path with JSON-escaped backslashes, such as `C:\\Users\\you\\git\\agent-browser\\bin\\cli.js`. MCP browser calls start the bridge if needed and wait for the installed extension without credentials or popup interaction.
 
 ## Browser commands
 
@@ -93,7 +92,7 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 
 ## Trust and limitations
 
-Any local process that can reach the running bridge can control the connected browser. Use it on a trusted computer with trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action. Disconnect the extension or stop the bridge when you want browser access disabled.
+Any local process that can reach the running bridge can control the connected browser. Use it on a trusted computer with trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action. Use **Pause** in the extension to pause browser access: browser calls can restart a stopped bridge automatically.
 
 The bridge binds to `127.0.0.1`, requires the expected loopback Host, and rejects HTTP requests carrying an Origin header. Extension WebSockets require a Chrome extension origin and a `hello` handshake with protocol version `1`. One extension may connect at once. A legacy `auth` handshake is accepted temporarily so an already installed extension can transition; its token is not validated. These checks restrict website access and do not authenticate local processes. Do not expose the service through a proxy, tunnel, or public interface.
 
@@ -118,7 +117,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It checks automatic connection before opening the popup, launches the CLI and an MCP stdio client, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types Unicode text and clicks, evaluates the result, receives a PNG as MCP image content, and verifies disconnect and reconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
+On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It starts the extension before a bridge exists, verifies automatic connection and recovery after a bridge restart without popup interaction, launches the CLI and an MCP stdio client, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types Unicode text and clicks, evaluates the result, receives a PNG as MCP image content, and verifies disconnect and reconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
 
 To verify a Chrome profile that is already connected, run `npm run test:connected`. This opens a temporary local test page, exercises page actions and navigation, and closes its tab afterward. It leaves other tabs and cookies unchanged. Navigation commands return before the destination finishes loading; wait for the tab's `status` to become `complete` before interacting with it, and allow asynchronous page updates to finish before checking their results.
 

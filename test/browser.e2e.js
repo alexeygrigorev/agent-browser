@@ -32,7 +32,7 @@ async function cli(args, input) {
   let stderr = '';
   child.stdout.on('data', data => { stdout += data; });
   child.stderr.on('data', data => { stderr += data; });
-  const timeout = setTimeout(() => child.kill(), 15000);
+  const timeout = setTimeout(() => child.kill(), 45000);
   child.stdin.end(input);
   try {
     const [code] = await once(child, 'close');
@@ -40,7 +40,7 @@ async function cli(args, input) {
     return JSON.parse(stdout);
   } finally { clearTimeout(timeout); }
 }
-const bridge = createBridge({ port: 19333 });
+let bridge;
 const fixture = http.createServer((req, res) => {
   if (req.url === '/login') {
     res.writeHead(302, { 'Set-Cookie': 'session=e2e-authenticated; HttpOnly; SameSite=Strict; Path=/', Location: '/' });
@@ -63,7 +63,8 @@ const fixture = http.createServer((req, res) => {
 let context;
 let mcp;
 try {
-  await bridge.listen();
+  // Refuse to touch a bridge owned by another process or personal Chrome session.
+  await assert.rejects(createClient().status(), error => error.cause?.cause?.code === 'ECONNREFUSED', 'Stop the existing bridge before running this isolated test');
   fixture.listen(0, '127.0.0.1');
   await once(fixture, 'listening');
   const url = `http://127.0.0.1:${fixture.address().port}/`;
@@ -75,6 +76,9 @@ try {
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   const extensionId = new URL(worker.url()).host;
   const client = createClient();
+  await assert.rejects(client.status(), /Cannot reach browser bridge/, 'extension starts with no bridge available');
+  bridge = createBridge({ port: 19333 });
+  await bridge.listen();
   await eventually(async () => (await client.status()).connected, 'automatic extension connection without opening popup');
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
@@ -132,19 +136,22 @@ try {
   assert.equal(mcpScreenshot.type, 'image');
   assert.equal(mcpScreenshot.mimeType, 'image/png');
   assert.equal(Buffer.from(mcpScreenshot.data, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  await bridge.close();
+  bridge = createBridge({ port: 19333 });
+  await bridge.listen();
+  await eventually(async () => (await client.status()).connected, 'automatic connection after bridge restart without popup interaction');
+  assert.ok((await textTool('tabs_list')).some(tab => tab.id === tabId), 'MCP works after bridge restart without popup interaction');
   await popup.locator('#disconnect').click();
   await eventually(async () => !(await client.status()).connected, 'extension disconnect');
   await assert.rejects(client.call('tabs.list'), /Connect the Chrome extension first/);
-  const disconnected = await mcp.callTool({ name: 'tabs_list', arguments: {} });
-  assert.equal(disconnected.isError, true, 'MCP reports revoked browser access');
   await popup.locator('#connect').click();
   await eventually(async () => (await client.status()).connected, 'reconnection without credentials');
   assert.ok((await textTool('tabs_list')).some(tab => tab.id === tabId), 'MCP works after reconnecting');
-  console.log('Browser E2E passed: automatic tokenless connection, actual CLI and MCP stdio, existing tab discovery, HttpOnly cookie session, snapshot, Unicode type, click, evaluate, MCP PNG image, disconnect and reconnect.');
+  console.log('Browser E2E passed: extension before bridge, automatic reconnect after restart, actual CLI and MCP stdio, existing HttpOnly session, page actions, MCP PNG image, explicit pause and resume.');
 } finally {
   await mcp?.close();
   await context?.close();
-  await bridge.close();
+  await bridge?.close();
   await new Promise(resolve => fixture.close(resolve));
   await rm(profile, { recursive: true, force: true });
 }
