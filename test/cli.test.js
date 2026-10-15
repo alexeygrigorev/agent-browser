@@ -98,3 +98,27 @@ test('CLI exports screenshot bytes to a new file and refuses overwrite', async t
   assert.match(second.stderr, /EEXIST/);
 });
 
+test('CLI download commands preserve filenames and return desktop metadata', async t => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/status')) return res.end(JSON.stringify({ connected: true }));
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    requests.push(JSON.parse(body));
+    res.end(JSON.stringify({ result: { id: 5, filename: '/desktop/Downloads/report.csv', state: 'complete' } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const env = { AGENT_BROWSER_PORT: String(server.address().port) };
+  for (const args of [['download', 'https://example.com/report.csv', '--filename', 'reports/report.csv'], ['downloads', 'wait', '5']]) {
+    const result = await run(args, '', env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).filename, '/desktop/Downloads/report.csv');
+  }
+  assert.deepEqual(requests, [
+    { method: 'downloads.start', params: { url: 'https://example.com/report.csv', filename: 'reports/report.csv' } },
+    { method: 'downloads.wait', params: { id: 5 } }
+  ]);
+});
+

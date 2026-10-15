@@ -1,5 +1,8 @@
 import { launchBridge } from './launcher.js';
 import { setTimeout as delay } from 'node:timers/promises';
+import { stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { basename } from 'node:path';
 
 export function getPort(value = process.env.AGENT_BROWSER_PORT || '19333') {
   const port = Number(value);
@@ -23,6 +26,33 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
     return payload;
   }
   const readiness = new Map();
+  async function ensureReady(selectedBrowser, bridgeOnly = false) {
+    if (!waitForConnection) return;
+    const target = bridgeOnly ? undefined : selectedBrowser;
+    const key = JSON.stringify([bridgeOnly, target]);
+    if (!readiness.has(key)) readiness.set(key, waitForBrowser(target, bridgeOnly).finally(() => { readiness.delete(key); }));
+    await readiness.get(key);
+  }
+  async function validateFile(path) {
+    const info = await stat(path);
+    if (!info.isFile()) throw new Error(`Upload must be a regular file: ${path}`);
+    if (info.size > 64 * 1024 * 1024) throw new Error(`Upload exceeds 64 MiB: ${path}`);
+  }
+  async function stageFile(path, options = {}) {
+    await validateFile(path);
+    const selectedBrowser = options.browser ?? browser;
+    if (selectedBrowser !== undefined && (typeof selectedBrowser !== 'string' || !selectedBrowser.trim())) throw new Error('Browser must be a non-empty nickname or ID');
+    await ensureReady(selectedBrowser, true);
+    const query = new URLSearchParams({ name: basename(path) });
+    if (selectedBrowser !== undefined) query.set('browser', selectedBrowser);
+    const response = await fetch(`http://127.0.0.1:${port}/files?${query}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+      body: createReadStream(path), duplex: 'half', signal: AbortSignal.timeout(timeout)
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.error) throw new Error(typeof payload.error === 'string' ? payload.error : payload.error?.message || `Upload HTTP ${response.status}`);
+    return payload;
+  }
   const statusPath = browser => browser === undefined ? '/status' : `/status?browser=${encodeURIComponent(browser)}`;
   async function waitForBrowser(selectedBrowser, bridgeOnly = false) {
     const deadline = Date.now() + connectTimeout;
@@ -47,22 +77,25 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
     } while (Date.now() < deadline);
     throw new Error(`Chrome${selectedBrowser === undefined ? '' : ` (${selectedBrowser})`} did not connect to the browser bridge. Open Chrome and check that the extension is enabled and not paused.`);
   }
-  return {
+  const client = {
+    stageFile,
+    async upload(tabId, selector, files, options = {}) {
+      if (!Number.isInteger(tabId) || typeof selector !== 'string' || !selector.trim() || !Array.isArray(files) || !files.length || files.some(path => typeof path !== 'string' || !path)) throw new Error('Upload requires tabId, selector and one or more file paths');
+      await Promise.all(files.map(validateFile));
+      const staged = [];
+      for (const path of files) staged.push(await stageFile(path, options));
+      return client.call('page.upload', { tabId, selector, files: staged.map(file => file.path) }, options);
+    },
     status: () => request(statusPath(browser)),
     async call(method, params = {}, options = {}) {
       if (typeof method !== 'string' || !method) throw new Error('Method is required');
       if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('Params must be a JSON object');
       const selectedBrowser = options.browser ?? browser;
       if (selectedBrowser !== undefined && (typeof selectedBrowser !== 'string' || !selectedBrowser.trim())) throw new Error('Browser must be a non-empty nickname or ID');
-      if (waitForConnection) {
-        const bridgeOnly = ['browsers.list', 'recording.list', 'recording.stop'].includes(method);
-        const target = bridgeOnly ? undefined : selectedBrowser;
-        const key = JSON.stringify([bridgeOnly, target]);
-        if (!readiness.has(key)) readiness.set(key, waitForBrowser(target, bridgeOnly).finally(() => { readiness.delete(key); }));
-        await readiness.get(key);
-      }
+      await ensureReady(selectedBrowser, ['browsers.list', 'recording.list', 'recording.stop'].includes(method));
       const payload = await request('/command', { method, params, ...(selectedBrowser === undefined ? {} : { browser: selectedBrowser }) });
       return Object.hasOwn(payload, 'result') ? payload.result : payload;
     }
   };
+  return client;
 }

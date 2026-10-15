@@ -11,6 +11,9 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   browser                  Show the connected browser identity
   browser name <nickname>  Save a nickname for the connected browser
   browsers                 List connected browsers
+  upload <tabId> <selector> <file...>  Upload files from this computer
+  downloads [list|info <id>|wait <id>|start <URL> [--filename <relative>]]
+  download <URL> [--filename <relative>]  Start a browser download
   screenshot <tabId> --output <path>  Save a PNG screenshot (new file)
   record start <tabId> [--output <path>]  Start a recording
   record stop <id>         Stop a recording
@@ -38,7 +41,7 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
   const port = getPort();
   if (command === 'serve') {
     const bridge = createBridge({ port, onDiagnostic: event => console.error(`[browser-bridge] ${JSON.stringify(event)}`) });
@@ -62,6 +65,22 @@ async function main() {
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (command === 'browsers') { console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return; }
+  if (command === 'upload') {
+    if (args.length < 3) throw new Error('Usage: upload <tabId> <selector> <file...>');
+    console.log(JSON.stringify(await client.upload(Number(args[0]), args[1], args.slice(2)), null, 2));
+    return;
+  }
+  if (command === 'downloads' || command === 'download') {
+    const parts = command === 'download' ? ['start', ...args] : (args.length ? args : ['list']);
+    const [action, value, flag, filename] = parts;
+    let params;
+    if (action === 'list' && parts.length === 1) params = {};
+    else if (['info', 'wait'].includes(action) && parts.length === 2 && Number.isInteger(Number(value))) params = { id: Number(value) };
+    else if (action === 'start' && value && (parts.length === 2 || (parts.length === 4 && flag === '--filename'))) params = { url: value, ...(filename ? { filename } : {}) };
+    else throw new Error('Usage: downloads [list|info <id>|wait <id>|start <URL> [--filename <relative>]]');
+    console.log(JSON.stringify(await client.call(`downloads.${action}`, params), null, 2));
+    return;
+  }
   if (command === 'screenshot') {
     if (args.length !== 3 || args[1] !== '--output' || !Number.isInteger(Number(args[0]))) throw new Error('Usage: screenshot <tabId> --output <path>');
     const path = resolve(args[2]);

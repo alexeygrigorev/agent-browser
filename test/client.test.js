@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createClient, getPort } from '../src/client.js';
 
 test('client needs no authentication, unwraps results, and reports browser errors', async t => {
@@ -29,6 +32,39 @@ test('client needs no authentication, unwraps results, and reports browser error
 test('ports must be valid TCP ports', () => {
   assert.equal(getPort('19333'), 19333);
   for (const port of ['0', '65536', 'abc', '1.5']) assert.throws(() => getPort(port));
+});
+
+test('uploads stage client bytes and original filename before assigning desktop paths', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-browser-upload-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'Résumé with spaces.txt');
+  const bytes = Buffer.from('client machine bytes');
+  await writeFile(path, bytes);
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    requests.push({ url: req.url, body });
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/files?')) {
+      assert.equal(req.headers['content-type'], 'application/octet-stream');
+      return res.end(JSON.stringify({ id: 'staged', path: '/desktop/staged/Résumé with spaces.txt', name: 'Résumé with spaces.txt', size: bytes.length }));
+    }
+    res.end(JSON.stringify({ result: { files: [{ name: 'Résumé with spaces.txt' }] } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = createClient({ port: server.address().port, browser: 'main' });
+  await assert.rejects(client.upload(1, 'input', [path, directory]), /regular file/);
+  assert.equal(requests.length, 0, 'all local paths validated before any staging');
+  const result = await client.upload(1, 'input[type=file]', [path]);
+  assert.equal(result.files[0].name, 'Résumé with spaces.txt');
+  const query = new URL(requests[0].url, 'http://localhost').searchParams;
+  assert.equal(query.get('name'), 'Résumé with spaces.txt');
+  assert.equal(query.get('browser'), 'main');
+  assert.deepEqual(requests[0].body, bytes);
+  assert.deepEqual(JSON.parse(requests[1].body), { method: 'page.upload', params: { tabId: 1, selector: 'input[type=file]', files: ['/desktop/staged/Résumé with spaces.txt'] }, browser: 'main' });
 });
 
 test('remote clients never launch a missing bridge when waiting without autostart', async () => {

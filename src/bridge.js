@@ -3,8 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createBrowserNames } from './browser-names.js';
 import { createRecordings } from './recordings.js';
+import { createFiles } from './files.js';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { basename } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 
-export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () => {}, names = createBrowserNames() } = {}) {
+export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () => {}, names = createBrowserNames(), files = createFiles() } = {}) {
   const browsers = new Map();
   const pending = new Map();
   // SSH reverse forwards may use a different loopback port on the remote host.
@@ -45,6 +50,22 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
         if (url.searchParams.has('browser')) { try { select(url.searchParams.get('browser')); } catch { connected = false; } }
         return reply(res, 200, { connected });
       }
+      if (url.pathname === '/files' && req.method === 'POST') {
+        if (url.searchParams.has('browser')) select(url.searchParams.get('browser'));
+        return reply(res, 201, await files.stage(req, url.searchParams.get('name')));
+      }
+      if (/^\/downloads\/[0-9]+\/file$/.test(url.pathname) && req.method === 'GET') {
+        const browser = select(url.searchParams.get('browser') || undefined);
+        const response = await send(browser, 'downloads.info', { id: Number(url.pathname.split('/')[2]) });
+        if (response.error) throw new Error(typeof response.error === 'string' ? response.error : response.error.message);
+        const item = response.result;
+        if (!item || item.state !== 'complete' || !item.exists || typeof item.filename !== 'string') return reply(res, 409, { error: 'Download is not complete or its saved file no longer exists' });
+        const info = await stat(item.filename);
+        if (!info.isFile()) throw new Error('Saved download is not a regular file');
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': info.size, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(basename(item.filename))}`, 'Cache-Control': 'no-store' });
+        await pipeline(createReadStream(item.filename), res);
+        return;
+      }
       if (req.url !== '/command' || req.method !== 'POST') return reply(res, 404, { error: 'Not found' });
       const chunks = [];
       let bytes = 0;
@@ -80,8 +101,12 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
         return reply(res, 200, { result: metadata(browser) });
       }
       if (command.method === 'recording.start') return reply(res, 200, { result: await recordings.start({ ...command.params, browserId: browser.id }) });
+      if (command.method === 'page.upload') await files.validate(command.params.files);
       reply(res, 200, await send(browser, command.method, command.params));
-    } catch (error) { reply(res, error instanceof SyntaxError ? 400 : 502, { error: error.message }); }
+    } catch (error) {
+      if (res.headersSent) res.destroy(error);
+      else reply(res, error.statusCode || (error instanceof SyntaxError ? 400 : 502), { error: error.message });
+    }
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
   server.on('upgrade', (req, socket, head) => {

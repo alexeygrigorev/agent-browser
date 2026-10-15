@@ -6,6 +6,14 @@ const object = properties => ({ type: 'object', properties });
 const tabId = { type: 'integer', description: 'Chrome tab ID from tabs_list' };
 const string = description => ({ type: 'string', description });
 const definitions = [
+  ['page.upload', 'Upload files from the MCP machine into a page file input', object({ tabId, selector: string('File input CSS selector'), files: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'Paths on the MCP client machine' } })],
+  ['downloads.start', 'Download a URL in Chrome using its signed-in session', object({ url: string('HTTP, HTTPS or data URL'), filename: string('Relative download filename') })],
+  ['downloads.list', 'List browser downloads', object({ limit: { type: 'integer', minimum: 1, maximum: 100 }, state: { type: 'string', enum: ['in_progress', 'interrupted', 'complete'] } })],
+  ['downloads.info', 'Inspect a download including its absolute desktop filename', object({ id: { type: 'integer' } })],
+  ['downloads.wait', 'Wait for a download to complete', object({ id: { type: 'integer' }, timeoutMs: { type: 'integer', minimum: 1, maximum: 25000 } })],
+  ['groups.list', 'List managed browser tab groups', object({})],
+  ['groups.manage', 'Add a tab to a managed group', object({ tabId, title: string('Group title'), color: { type: 'string', enum: ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] } })],
+  ['groups.release', 'Release a tab from its managed group', object({ tabId })],
   ['browsers.list', 'List connected browsers', object({})],
   ['recording.start', 'Start recording a browser tab to a local video file', object({ tabId, path: string('Output path on the bridge machine'), fps: { type: 'number', minimum: 1, maximum: 60 } })],
   ['recording.stop', 'Stop a recording and finalize its video file', object({ id: string('Recording ID') })],
@@ -27,7 +35,10 @@ const definitions = [
 ];
 for (const [method, , schema] of definitions) {
   schema.properties.browser = string('Optional browser nickname or ID to select');
-  const required = ['tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop'].includes(method) ? [] : ['tabId'];
+  const required = ['tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop', 'downloads.start', 'downloads.list', 'downloads.info', 'downloads.wait', 'groups.list'].includes(method) ? [] : ['tabId'];
+  if (method === 'page.upload') required.push('selector', 'files');
+  if (method === 'downloads.start') required.push('url');
+  if (['downloads.info', 'downloads.wait'].includes(method)) required.push('id');
   if (method === 'recording.stop') required.push('id');
   if (method === 'browser.rename') required.push('name');
   if (method === 'tabs.navigate') required.push('url');
@@ -49,7 +60,9 @@ export async function startMcp(client) {
     if (!definition) return { isError: true, content: [{ type: 'text', text: `Unknown tool: ${params.name}` }] };
     try {
       const { browser, ...args } = params.arguments || {};
-      const result = await client.call(definition[0], args, { browser });
+      const result = definition[0] === 'page.upload'
+        ? await client.upload(args.tabId, args.selector, args.files, { browser })
+        : await client.call(definition[0], args, { browser });
       if (definition[0] === 'page.screenshot') {
         const dataUrl = typeof result === 'string' ? result : result?.dataUrl;
         const match = dataUrl?.match(/^data:(image\/[\w.+-]+);base64,([\s\S]+)$/);
