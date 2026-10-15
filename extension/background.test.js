@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 
 async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) } } = {}) {
   const calls = [];
@@ -10,6 +11,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   let socket;
   let alarm;
   let connections = 0;
+  let generatedIds = 0;
   let timerId = 0;
   const timers = new Map();
   const chrome = {
@@ -43,7 +45,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
     send(value) { this.sent.push(JSON.parse(value)); }
     close() { this.readyState = 3; this.onclose?.(); }
   }
-  const context = vm.createContext({ chrome, WebSocket, setInterval: () => 1, clearInterval() {},
+  const context = vm.createContext({ chrome, WebSocket, crypto: { randomUUID: () => { generatedIds++; return randomUUID(); } }, setInterval: () => 1, clearInterval() {},
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; },
     clearTimeout: id => timers.delete(id)
   });
@@ -60,6 +62,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
     },
     alarm: () => alarm({ name: 'reconnect' }),
     connections: () => connections,
+    generatedIds: () => generatedIds,
     command: async (method, params = {}) => {
       await socket.onmessage({ data: JSON.stringify({ id: 'test', method, params }) });
       return socket.sent.at(-1);
@@ -69,10 +72,11 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
 }
 
 test('first install automatically introduces itself to the fixed loopback bridge without tokens', async () => {
-  const { socket, message } = await setup({ config: {} });
+  const { socket, message, stored } = await setup({ config: {} });
   socket.onopen();
   assert.equal(socket.url, 'ws://127.0.0.1:19333/extension');
-  assert.deepEqual(socket.sent[0], { type: 'hello', protocol: 1 });
+  assert.deepEqual(socket.sent[0], { type: 'hello', protocol: 1, browserId: stored.browserId });
+  assert.match(stored.browserId, /^[a-f0-9-]{36}$/);
   assert.equal((await message({ type: 'status' })).enabled, true);
 });
 
@@ -217,4 +221,44 @@ test('old policy failure auto-recovers but explicit pause remains respected', as
   const paused = await setup({ config: { enabled: false, paused: true, connectionError: 'Old failure' } });
   assert.equal(paused.connections(), 0);
   assert.equal((await paused.message({ type: 'status' })).status, 'Paused');
+});
+
+test('browser identity persists through reconnects and service-worker restarts', async () => {
+  const first = await setup({ config: {} });
+  const browserId = first.stored.browserId;
+  assert.equal(first.generatedIds(), 1);
+  await first.socket.onclose({ code: 1006 });
+  await first.runTimer(1000);
+  first.currentSocket().onopen();
+  assert.equal(first.currentSocket().sent[0].browserId, browserId);
+  assert.equal(first.generatedIds(), 1);
+  const restarted = await setup({ config: first.stored });
+  restarted.socket.onopen();
+  assert.equal(restarted.socket.sent[0].browserId, browserId);
+  assert.equal(restarted.generatedIds(), 0);
+});
+
+test('runtime status tracks ready metadata, nickname updates and disconnected state', async () => {
+  const { socket, message, stored } = await setup();
+  await socket.onmessage({ data: JSON.stringify({ type: 'ready', browser: { id: stored.browserId, name: 'main', connected: true } }) });
+  let state = await message({ type: 'status' });
+  assert.equal(state.browser.name, 'main');
+  assert.equal(state.browser.id, stored.browserId);
+  assert.equal(state.browser.connected, true);
+  await socket.onmessage({ data: JSON.stringify({ type: 'browser', browser: { id: stored.browserId, name: 'work', connected: true } }) });
+  state = await message({ type: 'status' });
+  assert.equal(state.browser.name, 'work');
+  await socket.onclose({ code: 1006 });
+  state = await message({ type: 'status' });
+  assert.equal(state.browser.name, 'work');
+  assert.equal(state.browser.connected, false);
+});
+
+test('old bridges can acknowledge connection without browser metadata', async () => {
+  const { socket, message, stored } = await setup();
+  await socket.onmessage({ data: JSON.stringify({ type: 'ready' }) });
+  const state = await message({ type: 'status' });
+  assert.equal(state.browser.id, stored.browserId);
+  assert.equal(state.browser.connected, true);
+  assert.match(state.status, /browser control enabled/);
 });

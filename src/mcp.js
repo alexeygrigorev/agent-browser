@@ -6,6 +6,12 @@ const object = properties => ({ type: 'object', properties });
 const tabId = { type: 'integer', description: 'Chrome tab ID from tabs_list' };
 const string = description => ({ type: 'string', description });
 const definitions = [
+  ['browsers.list', 'List connected browsers', object({})],
+  ['recording.start', 'Start recording a browser tab to a local video file', object({ tabId, path: string('Output path on the bridge machine'), fps: { type: 'number', minimum: 1, maximum: 60 } })],
+  ['recording.stop', 'Stop a recording and finalize its video file', object({ id: string('Recording ID') })],
+  ['recording.list', 'List recordings', object({})],
+  ['browser.info', 'Show the connected browser identity and nickname', object({})],
+  ['browser.rename', 'Persist a nickname for the connected browser', object({ name: string('Browser nickname') })],
   ['tabs.list', 'List open browser tabs', object({})],
   ['tabs.create', 'Create a browser tab', object({ url: string('URL to open'), active: { type: 'boolean' } })],
   ['tabs.close', 'Close a browser tab', object({ tabId })],
@@ -20,7 +26,10 @@ const definitions = [
   ['cdp.send', 'Send a Chrome DevTools Protocol command', object({ tabId, method: string('CDP method, e.g. Runtime.evaluate'), params: { type: 'object', additionalProperties: true } })]
 ];
 for (const [method, , schema] of definitions) {
-  const required = method === 'tabs.list' || method === 'tabs.create' ? [] : ['tabId'];
+  schema.properties.browser = string('Optional browser nickname or ID to select');
+  const required = ['tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop'].includes(method) ? [] : ['tabId'];
+  if (method === 'recording.stop') required.push('id');
+  if (method === 'browser.rename') required.push('name');
   if (method === 'tabs.navigate') required.push('url');
   if (method === 'page.type') required.push('text');
   if (method === 'page.key') required.push('key');
@@ -39,7 +48,8 @@ export async function startMcp(client) {
     const definition = definitions.find(([method]) => method.replaceAll('.', '_') === params.name);
     if (!definition) return { isError: true, content: [{ type: 'text', text: `Unknown tool: ${params.name}` }] };
     try {
-      const result = await client.call(definition[0], params.arguments || {});
+      const { browser, ...args } = params.arguments || {};
+      const result = await client.call(definition[0], args, { browser });
       if (definition[0] === 'page.screenshot') {
         const dataUrl = typeof result === 'string' ? result : result?.dataUrl;
         const match = dataUrl?.match(/^data:(image\/[\w.+-]+);base64,([\s\S]+)$/);

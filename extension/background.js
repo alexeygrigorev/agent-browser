@@ -6,12 +6,17 @@ let heartbeat;
 let reconnectTimer;
 let handshakeTimer;
 let retryDelay = 1000;
+let browserId;
+let browser;
 let generation = 0;
 let activeGeneration = 0;
 let commandQueue = Promise.resolve();
 const attached = new Set();
 const initializing = new Map();
-const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError']).then(async config => {
+const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError', 'browserId']).then(async config => {
+  browserId = config.browserId || crypto.randomUUID();
+  if (!config.browserId) await chrome.storage.local.set({ browserId });
+  browser = { id: browserId, connected: false };
   await chrome.storage.local.remove('token');
   enabled = config.paused !== true && (config.enabled !== false || !!config.connectionError);
   if (enabled && config.connectionError) {
@@ -140,7 +145,7 @@ function connect() {
   reconnectTimer = undefined;
   status = 'Connecting…';
   const ws = socket = new WebSocket(ENDPOINT);
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', protocol: 1 }));
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', protocol: 1, browserId }));
   ws.onmessage = async event => {
     if (socket !== ws || !enabled) return;
     let message;
@@ -149,6 +154,11 @@ function connect() {
       clearTimeout(handshakeTimer);
       retryDelay = 1000;
       status = 'Connected — browser control enabled';
+      browser = { ...browser, ...message.browser, connected: true };
+      return;
+    }
+    if (message.type === 'browser') {
+      browser = { ...browser, ...message.browser };
       return;
     }
     if (message.type === 'pong') return;
@@ -171,6 +181,7 @@ function connect() {
   ws.onclose = event => {
     if (socket !== ws) return;
     socket = undefined;
+    browser = { ...browser, connected: false };
     generation++;
     clearInterval(heartbeat);
     clearTimeout(handshakeTimer);
@@ -201,6 +212,7 @@ async function disconnect() {
   clearTimeout(handshakeTimer);
   socket?.close();
   socket = undefined;
+  browser = { ...browser, connected: false };
   status = 'Paused';
   await Promise.allSettled([...initializing.values()]);
   await Promise.allSettled([...attached].map(tabId => chrome.debugger.detach({ tabId })));
@@ -224,7 +236,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       await chrome.storage.local.set({ enabled: true, paused: false });
       connect();
     }
-    reply({ enabled, status });
-  })().catch(error => reply({ enabled, status: error.message }));
+    reply({ enabled, status, browser });
+  })().catch(error => reply({ enabled, status: error.message, browser }));
   return true;
 });
