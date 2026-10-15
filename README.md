@@ -1,8 +1,18 @@
 # Agent Browser Bridge
 
+<img src="extension/icons/icon-128.png" alt="Agent Browser Bridge robot cursor icon" width="72">
+
 Control your existing, signed-in Chrome from any agent that can run a shell command or connect to an MCP server. Install the unpacked extension in the Chrome profile you already use. It connects automatically to a local service and controls that profile's existing tabs with their existing cookies and logins. No token or pairing step is required. You do not need a separate browser, a remote debugging launch flag, or to export cookies.
 
-This is an early developer release. It is not published in the Chrome Web Store. Tests cover the local bridge and extension logic. The optional browser smoke test exercises the actual CLI and MCP stdio interface with the unpacked extension in an isolated Chromium profile, including an existing HttpOnly cookie session. Individual agent configurations and your signed-in browser profile require separate validation.
+Control multiple Chrome profiles through one bridge, select them by nickname, upload files, retrieve downloads, take screenshots, and record silent video. Agents on another machine can use the same browsers through an SSH tunnel.
+
+| `main` profile | `orin` profile |
+| --- | --- |
+| <img src="docs/screenshots/extension-main.png" alt="Extension popup showing main connected with browser control enabled and a Pause button" width="350"> | <img src="docs/screenshots/extension-orin.png" alt="Extension popup showing orin connected with browser control enabled and a Pause button" width="350"> |
+
+Actual extension screenshots from two disposable Chromium profiles connected to one bridge. Each profile has its own identity and nickname. Normal use connects automatically; **Pause** stops access to that profile.
+
+This is an early developer release, available as an unpacked extension. Automated tests exercise the CLI, MCP, two isolated Chromium profiles, cookie isolation, uploads, downloads, managed groups, screenshots, and video. Individual agent configurations and your signed-in browser profile require separate validation.
 
 ## Install and start
 
@@ -35,7 +45,7 @@ node bin/cli.js --browser orin call tabs.list '{}'
 
 `browser` reports the connected browser's ID, nickname, and connection state. Names start with a letter, contain up to 32 letters, digits, underscores, or hyphens, and are stored in lowercase. Each nickname belongs to one browser. Names persist in `~/.agent-browser/browser-names.json` across bridge restarts.
 
-Use `--browser main` to pin commands to that browser. A mismatched or disconnected selection fails instead of controlling whichever browser happens to be connected. You can also select the stable browser ID. Omitting the selector uses the current connected browser.
+Use `--browser main` to pin commands to that browser. A mismatched or disconnected selection fails instead of controlling whichever browser happens to be connected. You can also select the stable browser ID. Omitting the selector works when exactly one browser is connected; with multiple connections, select one explicitly.
 
 Install the extension in each Chrome profile you want to control. Name each profile while it is selected, then use `browsers` to inspect connected IDs and nicknames. For example, keep your everyday profile named `main` and another named `orin`, and pass the desired name with each agent command.
 
@@ -177,6 +187,7 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | --- | --- |
 | `browser.info` | `{}`; returns browser ID, nickname, and connection state |
 | `browser.rename` | `name`; assigns a persistent nickname |
+| `browsers.list` | `{}`; lists connected profiles and saved offline aliases |
 | `tabs.list` | `{}` |
 | `tabs.create` | `url?`, `active?` |
 | `tabs.close` | `tabId` |
@@ -188,13 +199,21 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `page.scroll` | `tabId`, `x?`, `y?` (defaults to 600) |
 | `page.evaluate` | `tabId`, `expression` |
 | `page.screenshot` | `tabId`, `format?` (defaults to png), `quality?`, `fullPage?`; returns base64 `data` |
+| `page.upload` | `tabId`, `selector`, `files`; absolute paths on the Chrome computer; prefer CLI `upload` or MCP `page_upload` for client files |
+| `downloads.start` | `url`, `filename?`; starts a Chrome download |
+| `downloads.list` | `limit?`, `state?`; returns download metadata |
+| `downloads.info` | `id`; includes the absolute saved filename |
+| `downloads.wait` | `id`, `timeoutMs?`; waits up to 25 seconds for completion |
+| `groups.list` | `{}`; lists tab groups |
+| `groups.manage` | `tabId`, `title?`, `color?`; groups a controlled tab |
+| `groups.release` | `tabId`; ungroups and detaches a managed tab |
 | `cdp.send` | `tabId`, `method`, `params?`; sends a Chrome DevTools Protocol command |
 
 ## Trust and limitations
 
 Any local process that can reach the running bridge can control the connected browser. Use it on a trusted computer with trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action. Use **Pause** in the extension to pause browser access: browser calls can restart a stopped bridge automatically.
 
-The bridge binds to `127.0.0.1`, requires the expected loopback Host, and rejects HTTP requests carrying an Origin header. Extension WebSockets require a Chrome extension origin and a `hello` handshake with protocol version `1`. One extension may connect at once. A legacy `auth` handshake is accepted temporarily so an already installed extension can transition; its token is not validated. These checks restrict website access and do not authenticate local processes. Do not expose the service through a proxy, tunnel, or public interface.
+The bridge binds to `127.0.0.1`, requires the expected loopback Host, and rejects HTTP requests carrying an Origin header. Extension WebSockets require a Chrome extension origin and a `hello` handshake with protocol version `1`. Multiple profiles connect using independent browser IDs. A legacy `auth` handshake is accepted temporarily so an already installed extension can transition; its token is not validated. These checks restrict website access and do not authenticate local processes. Keep the service off public interfaces; for remote access, use the loopback SSH forwarding described above with a trusted host.
 
 Chrome restricts debugging of internal pages and some protected tabs. Other debuggers, including DevTools, can interfere with attachment. Browser command failures and disconnects can occur after an action has already executed; inspect the page before retrying a consequential command.
 
@@ -217,7 +236,11 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Stop any existing bridge first: this smoke test needs the extension's fixed port `19333`. It starts the extension before a bridge exists, verifies automatic connection and recovery after a bridge restart without popup interaction, launches the CLI and an MCP stdio client, discovers a fixture tab, uses an existing HttpOnly cookie to access a protected endpoint, reads a snapshot, types Unicode text and clicks, evaluates the result, receives a PNG as MCP image content, and verifies disconnect and reconnect. It creates and removes a temporary browser profile and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
+On Linux, install browser system dependencies with `npx playwright install --with-deps chromium`. Install FFmpeg for the recording checks. The test defaults to port `19333`; stop an existing bridge first or set `AGENT_BROWSER_TEST_PORT=19335` to leave it running. With another port, the test adjusts a temporary extension copy.
+
+The browser test verifies automatic connection and recovery, independent profiles and cookies, CLI and MCP actions, file uploads, download paths and retrieval, managed groups, screenshots, and decodable video. It creates and removes disposable browser profiles and never loads your personal Chrome profile or logins. This test runs separately from `npm test`.
+
+To regenerate the README screenshots, run `node scripts/capture-readme.js`. It uses two disposable Chromium profiles and a separate bridge on port `19336`. Install Playwright Chromium first; no personal browser session is used.
 
 To verify a Chrome profile that is already connected, run `npm run test:connected`. This opens a temporary local test page, exercises page actions and navigation, and closes its tab afterward. It leaves other tabs and cookies unchanged. Navigation commands return before the destination finishes loading; wait for the tab's `status` to become `complete` before interacting with it, and allow asynchronous page updates to finish before checking their results.
 
