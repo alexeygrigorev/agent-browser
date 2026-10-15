@@ -40,6 +40,11 @@ test('local agents need no token; browser origins, fetch metadata, and rebound h
     req.on('error', reject);
   });
   assert.equal(reboundStatus, 403);
+  const forwardedStatus = await new Promise((resolve, reject) => {
+    const req = http.get(`${base}/status`, { headers: { Host: '127.0.0.1:19334' } }, res => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+  });
+  assert.equal(forwardedStatus, 200, 'SSH forward can use a different loopback port');
   assert.equal((await request('/command', { method: 'POST', headers: { Origin: 'null' }, body: '{}' })).status, 403);
   assert.deepEqual(await (await request('/status')).json(), { connected: false });
 });

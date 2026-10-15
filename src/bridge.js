@@ -7,7 +7,8 @@ import { createRecordings } from './recordings.js';
 export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () => {}, names = createBrowserNames() } = {}) {
   const browsers = new Map();
   const pending = new Map();
-  const localHost = req => req.headers.host === `127.0.0.1:${server.address()?.port}`;
+  // SSH reverse forwards may use a different loopback port on the remote host.
+  const localHost = req => /^127\.0\.0\.1(?::([1-9][0-9]{0,4}))?$/.test(req.headers.host || '') && Number((req.headers.host || '').split(':')[1] || 80) <= 65535;
   const metadata = browser => ({ id: browser.id, name: browser.name || null, connected: true });
   const select = selector => {
     const connected = [...browsers.values()];
