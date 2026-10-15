@@ -155,7 +155,9 @@ test('automatic readiness reports a paused or closed Chrome without sending a co
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const client = createClient({ port: server.address().port, autoStart: true, connectTimeout: 50 });
+  // Allow the first local HTTP response to complete on shared CI runners;
+  // the separate hanging-listener test exercises the tight 50 ms deadline.
+  const client = createClient({ port: server.address().port, autoStart: true, connectTimeout: 500 });
   await assert.rejects(client.call('tabs.list'), /Open Chrome.*not paused/);
   assert.equal(posts, 0);
 });
