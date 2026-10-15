@@ -27,6 +27,10 @@ node bin/cli.js --no-autostart --browser orin call tabs.list '{}'
 
 Always disable remote autostart with `--no-autostart` or `AGENT_BROWSER_AUTOSTART=0`: a failed tunnel must not launch an unrelated remote bridge. Honor the requested name/ID and fail rather than switch browsers. Restore the desktop SSH tunnel on connection failure.
 
+The same single tunnel carries all Chrome profiles through one desktop bridge. Install the same extension directory in each desktop profile; each keeps an independent stable UUID. No copied extension, edited port, additional service, or additional tunnel is needed per profile. List with `browsers`, then assign requested aliases using `--no-autostart --browser ID browser name NAME`. Names can extend beyond `main` and `orin`; offline aliases remain listed with `connected:false`.
+
+Select a nickname/ID on every remote command or MCP tool's `browser` property when multiple profiles are present. Different profiles support concurrent work; each profile serializes its own actions. Consult the current repository and tool definitions rather than assuming the initial single-profile implementation. An old desktop extension needs one reload after upgrading to activate UUID identity, not a Connect click during normal work.
+
 For another remote port, run `tunnel hetzner --remote-port 19334` on the desktop and set `AGENT_BROWSER_PORT=19334` remotely. PowerShell: `$env:AGENT_BROWSER_PORT='19334'`. POSIX: `export AGENT_BROWSER_PORT=19334`.
 
 ## MCP and actions
@@ -38,6 +42,14 @@ Use `tabs.list`, then `page.snapshot` with the tab ID before interacting. Preser
 ```powershell
 '{"tabId":123}' | node .\bin\cli.js --no-autostart --browser main call page.snapshot --stdin
 ```
+
+Upload a remote-agent file with `node bin/cli.js --no-autostart --browser main upload 123 'input[type=file]' ./report.pdf`. The CLI transfers it through the tunnel and selects the desktop file input; submit the form separately if requested. MCP `page_upload` does the same staging. Generic `page.upload` requires desktop-local paths.
+
+Each staged file may be up to 64 MiB. Copies remain in desktop `~/.agent-browser/uploads` for later submission; this transfers specific requested files, not general filesystem browsing access.
+
+Download using `node bin/cli.js --no-autostart --browser main download URL`, then `downloads wait DOWNLOAD_ID` with the same global flags. Metadata's absolute `filename` belongs to the desktop Chrome computer, not the remote host.
+
+Retrieve the bytes remotely with `node bin/cli.js --no-autostart --browser main downloads save DOWNLOAD_ID --output ./report.pdf`. This creates a new file on the remote agent's computer without overwriting existing files. MCP `downloads_save` performs the same transfer; do not treat Chrome's desktop path as a remote filesystem path.
 
 The CLI supports `screenshot 123 --output shot.png` and `record start 123 --output demo.webm`, followed by `record stop RECORDING_ID`. Screenshots are saved on the CLI computer; recording paths belong to the desktop bridge computer. Silent sampled-frame WebM requires desktop FFmpeg with `libvpx-vp9` on PATH or `AGENT_BROWSER_FFMPEG`.
 

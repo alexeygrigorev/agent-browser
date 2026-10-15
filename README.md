@@ -39,6 +39,46 @@ Use `--browser main` to pin commands to that browser. A mismatched or disconnect
 
 Install the extension in each Chrome profile you want to control. Name each profile while it is selected, then use `browsers` to inspect connected IDs and nicknames. For example, keep your everyday profile named `main` and another named `orin`, and pass the desired name with each agent command.
 
+One shared bridge on port `19333` supports multiple profiles concurrently. Load the **same extension directory** in each profile; do not copy the extension, edit its port, or start a service per profile. Each profile stores its own stable UUID. Use `--browser ID browser name NAME` to assign any nickname, then select it on each CLI command or with the MCP tool's `browser` property. Offline aliases remain visible in `browsers` with `connected: false`. Different profiles can work concurrently; actions within each profile are serialized. A single SSH tunnel carries every profile to remote agents.
+
+If an agent claims only one profile is supported, have it read this checkout's current skills and tool definitions. After upgrading an older unpacked extension, reload it once in each profile to activate the worker's UUID identity. Normal operation needs no Connect click.
+
+## Managed browser tabs
+
+Tabs created, navigated, or inspected through page commands are automatically placed in a visible agent group labeled with the browser nickname, such as `🤖 Agent · main`. `tabs.list` reports each tab's `groupId` and `managed` state.
+
+```sh
+node bin/cli.js --browser main call groups.list '{}'
+node bin/cli.js --browser main call groups.release '{"tabId":123}'
+node bin/cli.js --browser main call groups.manage '{"tabId":123}'
+```
+
+Releasing a managed tab ungroups it and detaches the debugger. Inspecting or controlling it again can manage it again. `groups.manage` optionally accepts `title` and `color` for a custom group appearance.
+
+## Uploads and downloads
+
+Upload a file from the agent's computer into a page's file input:
+
+```sh
+node bin/cli.js --browser main upload 123 'input[type=file]' ./report.pdf
+```
+
+The client transfers the file to the desktop bridge and selects it in the page; submit the form separately when intended. This works through the SSH tunnel too, so remote agents do not need a desktop filesystem path. Multiple files may follow the selector. MCP `page_upload` performs the same transfer. Generic `page.upload` calls instead require paths that already exist on the desktop.
+
+Staging accepts up to 64 MiB per file. Copies remain under `~/.agent-browser/uploads` on the desktop so a page can submit them later. CLI and MCP upload read specific client paths; generic page upload validates specific desktop paths. This does not provide a general filesystem browsing interface.
+
+```sh
+node bin/cli.js --browser main download https://example.com/report.pdf --filename reports/report.pdf
+node bin/cli.js --browser main downloads list
+node bin/cli.js --browser main downloads info 5
+node bin/cli.js --browser main downloads wait 5
+node bin/cli.js --browser main downloads save 5 --output ./report.pdf
+```
+
+Use the download ID returned by `download`. Metadata reports the state and absolute `filename` on the Chrome computer, including when the agent runs remotely. An optional filename is relative to Chrome's downloads directory; wait for completion before using the file. Downloading through Chrome preserves the selected profile's existing login session.
+
+`downloads save` copies a completed Chrome download to a new file on the agent's computer, including through the SSH tunnel. It does not overwrite existing output files. MCP `downloads_save` provides the same transfer. The Chrome metadata's absolute desktop filename and the agent's chosen output path belong to different computers when used remotely.
+
 ## Screenshots and video
 
 Get a tab ID from `tabs.list`, then save a screenshot directly to a new file:
