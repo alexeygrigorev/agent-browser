@@ -21,7 +21,63 @@ No popup interaction is needed for normal use. Browser commands wait up to 35 se
 
 If updating an older unpacked extension, reload it once in `chrome://extensions` to refresh its popup and service worker. No pairing token is needed.
 
+## Browser nicknames
+
+Give your connected Chrome profile a memorable name, then select it explicitly in agent commands:
+
+```sh
+node bin/cli.js browser
+node bin/cli.js browser name main
+node bin/cli.js browsers
+node bin/cli.js --browser main call tabs.list '{}'
+node bin/cli.js --browser orin call tabs.list '{}'
+```
+
+`browser` reports the connected browser's ID, nickname, and connection state. Names start with a letter, contain up to 32 letters, digits, underscores, or hyphens, and are stored in lowercase. Each nickname belongs to one browser. Names persist in `~/.agent-browser/browser-names.json` across bridge restarts.
+
+Use `--browser main` to pin commands to that browser. A mismatched or disconnected selection fails instead of controlling whichever browser happens to be connected. You can also select the stable browser ID. Omitting the selector uses the current connected browser.
+
+Install the extension in each Chrome profile you want to control. Name each profile while it is selected, then use `browsers` to inspect connected IDs and nicknames. For example, keep your everyday profile named `main` and another named `orin`, and pass the desired name with each agent command.
+
+## Screenshots and video
+
+Get a tab ID from `tabs.list`, then save a screenshot directly to a new file:
+
+```sh
+node bin/cli.js --browser main screenshot 123 --output screenshot.png
+```
+
+A `.jpg` or `.jpeg` output suffix selects JPEG; other suffixes produce PNG. Existing files are not overwritten. MCP `page_screenshot` returns image content directly, and the generic `page.screenshot` command returns base64 data.
+
+Record a tab to silent WebM video:
+
+```sh
+node bin/cli.js --browser main record start 123 --output demo.webm
+node bin/cli.js --browser main record list
+node bin/cli.js --browser main record stop RECORDING_ID
+```
+
+Use the recording ID returned by `record start`. Install FFmpeg on the computer running the bridge and make `ffmpeg` available on PATH, or set `AGENT_BROWSER_FFMPEG` to its executable path. Recording captures browser frames without audio. With a remote agent, recording output paths refer to the computer running the bridge.
+
+## Agents on Hetzner or another SSH host
+
+Keep Chrome and the extension on your own computer. From that computer, open a reverse SSH tunnel to a host in your SSH configuration:
+
+```sh
+node bin/cli.js tunnel hetzner
+```
+
+Leave that command running. It forwards the bridge to a loopback listener on the remote host. On the remote host, install this project and run:
+
+```sh
+node bin/cli.js --no-autostart --browser main call tabs.list '{}'
+```
+
+For a remote MCP client, set `AGENT_BROWSER_AUTOSTART=0` in its environment, or put `--no-autostart` before `mcp` in the launch arguments. This prevents the remote agent from starting a separate bridge if the tunnel goes down. `tunnel hetzner --remote-port 19334` chooses another remote port; set `AGENT_BROWSER_PORT=19334` on the remote client to match. The remote host and its local processes gain browser control while the tunnel is open, so use a host you trust and keep the listener on loopback.
+
 ## Use from an agent
+
+Repository-local skills are available as [browser-control](skills/browser-control/SKILL.md) for local agents and [remote-browser-control](skills/remote-browser-control/SKILL.md) for agents on Hetzner or another SSH host. They resolve the CLI relative to this checkout and do not install anything into your agent configuration.
 
 Give any shell-capable agent the absolute path to this checkout and tell it to run commands such as:
 
@@ -71,12 +127,16 @@ A typical client configuration looks like this; exact configuration location and
 
 On Windows, use an absolute Windows path with JSON-escaped backslashes, such as `C:\\Users\\you\\git\\agent-browser\\bin\\cli.js`. MCP browser calls start the bridge if needed and wait for the installed extension without credentials or popup interaction.
 
+MCP provides `browser_info` and `browser_rename` (with `name`, such as `main`). Every tool accepts an optional `browser` argument to select a nickname or browser ID. For example, call `tabs_list` with `{"browser":"main"}`. You can also pin the MCP server by adding `"--browser", "main"` before `"mcp"` in its launch arguments.
+
 ## Browser commands
 
 Pass parameters as one JSON object after the method name. Get tab IDs from `tabs.list`, then inspect a page before interacting with it.
 
 | Method | Parameters |
 | --- | --- |
+| `browser.info` | `{}`; returns browser ID, nickname, and connection state |
+| `browser.rename` | `name`; assigns a persistent nickname |
 | `tabs.list` | `{}` |
 | `tabs.create` | `url?`, `active?` |
 | `tabs.close` | `tabId` |
