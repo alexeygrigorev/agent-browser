@@ -10,6 +10,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y ffmpeg
       - run: npm run check
       - run: npm test
   browser:
@@ -21,5 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y ffmpeg
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
