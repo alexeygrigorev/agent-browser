@@ -74,8 +74,6 @@ async function upload(tabId, { selector, files }) {
   const result = await cdp(tabId, 'Runtime.callFunctionOn', {
     objectId: object.objectId,
     functionDeclaration: `function () {
-      this.dispatchEvent(new Event('input', { bubbles: true }));
-      this.dispatchEvent(new Event('change', { bubbles: true }));
       return { files: Array.from(this.files, file => ({ name: file.name, size: file.size, type: file.type })) };
     }`, returnByValue: true
   });

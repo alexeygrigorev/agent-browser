@@ -310,7 +310,7 @@ test('old bridges can acknowledge connection without browser metadata', async ()
   assert.match(state.status, /browser control enabled/);
 });
 
-test('uploads browser-machine files through the selected file input and dispatches change events', async () => {
+test('uploads browser-machine files through the selected input without duplicating native change events', async () => {
   const { command, calls } = await setup();
   const result = await command('page.upload', { tabId: 7, selector: '#files', files: ['C:\\files\\report.txt'] });
   assert.equal(result.result.files[0].name, 'report.txt');
@@ -319,8 +319,7 @@ test('uploads browser-machine files through the selected file input and dispatch
   assert.equal(setFiles.files[0], 'C:\\files\\report.txt');
   const events = calls.find(([method]) => method === 'Runtime.callFunctionOn')[2];
   assert.equal(events.objectId, 'upload-input');
-  assert.match(events.functionDeclaration, /new Event\('input'/);
-  assert.match(events.functionDeclaration, /new Event\('change'/);
+  assert.doesNotMatch(events.functionDeclaration, /dispatchEvent|new Event/);
   assert.match((await command('page.upload', { tabId: 7, selector: '#files', files: ['relative.txt'] })).error, /absolute paths/);
 });
 
