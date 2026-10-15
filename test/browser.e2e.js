@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, isAbsolute, relative } from 'node:path';
 import { chromium } from 'playwright';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createBridge } from '../src/bridge.js';
-import { createClient } from '../src/client.js';
+import { createClient, getPort } from '../src/client.js';
 import { createBrowserNames } from '../src/browser-names.js';
 
 async function eventually(check, label) {
@@ -39,11 +39,12 @@ async function eventually(check, label) {
 
 const profile = await mkdtemp(join(tmpdir(), 'agent-browser-e2e-'));
 const profile2 = await mkdtemp(join(tmpdir(), 'agent-browser-e2e-orin-'));
+const port = getPort(process.env.AGENT_BROWSER_TEST_PORT || '19333');
 const names = () => createBrowserNames({ path: join(profile, 'browser-names.json') });
-const childEnv = { ...process.env, AGENT_BROWSER_PORT: '19333' };
+const childEnv = { ...process.env, AGENT_BROWSER_PORT: String(port) };
 delete childEnv.AGENT_BROWSER_TOKEN;
 delete childEnv.AGENT_BROWSER_NAME;
-const qualifiedStatus = async browser => (await fetch(`http://127.0.0.1:19333/status?browser=${encodeURIComponent(browser)}`)).json();
+const qualifiedStatus = async browser => (await fetch(`http://127.0.0.1:${port}/status?browser=${encodeURIComponent(browser)}`)).json();
 async function cli(args, input) {
   const child = spawn(process.execPath, [resolve('bin/cli.js'), ...args], {
     env: childEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
@@ -61,7 +62,22 @@ async function cli(args, input) {
   } finally { clearTimeout(timeout); }
 }
 let bridge;
-const fixture = http.createServer((req, res) => {
+const downloadText = 'Browser download fixture: café "quoted"\n';
+let uploadedBody;
+const fixture = http.createServer(async (req, res) => {
+  if (req.url === '/attachment') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': 'attachment; filename="agent-browser-fixture.txt"' });
+    res.end(downloadText);
+    return;
+  }
+  if (req.url === '/upload' && req.method === 'POST') {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    uploadedBody = Buffer.concat(chunks).toString('utf8');
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Upload received');
+    return;
+  }
   if (req.url.startsWith('/login')) {
     const session = req.url.includes('profile=orin') ? 'e2e-orin' : 'e2e-authenticated';
     res.writeHead(302, { 'Set-Cookie': `session=${session}; HttpOnly; SameSite=Strict; Path=/`, Location: '/' });
@@ -80,6 +96,9 @@ const fixture = http.createServer((req, res) => {
     <h1>Disposable browser fixture</h1>
     <label>Name <input id="name" value="replace me"></label>
     <button id="submit" onclick="document.querySelector('#result').textContent = 'Hello ' + document.querySelector('#name').value">Submit</button>
+    <form id="upload-form" onsubmit="event.preventDefault();fetch('/upload',{method:'POST',body:new FormData(this)}).then(r=>r.text()).then(t=>document.querySelector('#upload-result').textContent=t)">
+    <input id="file" name="file" type="file"><button id="upload-submit">Upload fixture</button></form><p id="upload-result">No upload</p>
+    <script>window.__uploadEvents={input:0,change:0};for(const type of ['input','change'])document.querySelector('#file').addEventListener(type,()=>window.__uploadEvents[type]++)</script>
     <p id="result">Waiting</p>`);
 });
 let context;
@@ -87,25 +106,36 @@ let context2;
 let mcp;
 try {
   // Refuse to touch a bridge owned by another process or personal Chrome session.
-  await assert.rejects(createClient().status(), error => error.cause?.cause?.code === 'ECONNREFUSED', 'Stop the existing bridge before running this isolated test');
+  await assert.rejects(createClient({ port }).status(), error => error.cause?.cause?.code === 'ECONNREFUSED', 'Stop the existing bridge before running this isolated test');
   fixture.listen(0, '127.0.0.1');
   await once(fixture, 'listening');
   const url = `http://127.0.0.1:${fixture.address().port}/`;
-  const extension = resolve('extension');
+  let extension = resolve('extension');
+  if (port !== 19333) {
+    extension = join(profile, 'test-extension');
+    await cp(resolve('extension'), extension, { recursive: true });
+    for (const filename of ['background.js', 'manifest.json']) {
+      const path = join(extension, filename);
+      const source = await readFile(path, 'utf8');
+      await writeFile(path, source.replaceAll('127.0.0.1:19333', `127.0.0.1:${port}`));
+    }
+  }
+  const downloadsPath = join(profile, 'downloads');
+  await mkdir(downloadsPath);
   context = await chromium.launchPersistentContext(profile, {
-    channel: 'chromium', headless: true,
+    channel: 'chromium', headless: true, acceptDownloads: true, downloadsPath,
     args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
   });
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   const extensionId = new URL(worker.url()).host;
-  let client = createClient();
+  let client = createClient({ port });
   await assert.rejects(client.status(), /Cannot reach browser bridge/, 'extension starts with no bridge available');
-  bridge = createBridge({ port: 19333, names: names() });
+  bridge = createBridge({ port, names: names() });
   await bridge.listen();
   await eventually(async () => (await client.status()).connected, 'automatic extension connection without opening popup');
   const mainIdentity = await client.call('browser.info');
   await client.call('browser.rename', { name: 'main' }, { browser: mainIdentity.id });
-  client = createClient({ browser: 'main' });
+  client = createClient({ port, browser: 'main' });
   childEnv.AGENT_BROWSER_NAME = 'main';
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
@@ -129,6 +159,35 @@ try {
   const snapshot = await client.call('page.snapshot', { tabId });
   assert.equal(snapshot.title, 'Agent Browser E2E');
   assert.ok(snapshot.elements.some(element => element.selector === '#name'));
+  const managedTab = (await client.call('tabs.list')).find(tab => tab.id === tabId);
+  assert.equal(managedTab.managed, true, 'page interaction automatically manages its tab');
+  assert.ok((await client.call('groups.list')).some(group => group.id === managedTab.groupId && group.managed && group.title.includes('main')), 'managed group visibly identifies the selected browser');
+  await client.call('groups.release', { tabId });
+  const releasedTab = (await client.call('tabs.list')).find(tab => tab.id === tabId);
+  assert.equal(releasedTab.managed, false);
+  assert.equal(releasedTab.groupId, -1);
+  await client.call('groups.manage', { tabId });
+  assert.equal((await client.call('tabs.list')).find(tab => tab.id === tabId).managed, true);
+  const uploadPath = join(profile, 'upload-fixture.txt');
+  const uploadText = 'Upload fixture café "quoted"\n';
+  await writeFile(uploadPath, uploadText, 'utf8');
+  await cli(['upload', String(tabId), '#file', uploadPath]);
+  assert.deepEqual(await client.call('page.evaluate', { tabId, expression: 'window.__uploadEvents' }), { input: 1, change: 1 }, 'file selection emits exactly one native input and change event');
+  await client.call('page.click', { tabId, selector: '#upload-submit' });
+  await eventually(async () => uploadedBody?.includes(uploadText), 'actual multipart form upload');
+  assert.ok(uploadedBody.includes('filename="upload-fixture.txt"'));
+  assert.equal(await client.call('page.evaluate', { tabId, expression: 'document.querySelector("#file").files[0].name' }), 'upload-fixture.txt');
+  const download = await cli(['download', `${url}attachment`]);
+  const downloaded = await cli(['downloads', 'wait', String(download.id)]);
+  assert.equal(downloaded.state, 'complete');
+  assert.ok(isAbsolute(downloaded.filename), 'Chrome reports an absolute saved path');
+  const downloadRelative = relative(downloadsPath, downloaded.filename);
+  assert.ok(downloadRelative && !downloadRelative.startsWith('..') && !isAbsolute(downloadRelative), 'download stays within the disposable test directory');
+  assert.equal(await readFile(downloaded.filename, 'utf8'), downloadText);
+  const savedDownloadPath = join(profile, 'retrieved-download.txt');
+  await cli(['downloads', 'save', String(download.id), '--output', savedDownloadPath]);
+  assert.equal(await readFile(savedDownloadPath, 'utf8'), downloadText);
+  await assert.rejects(cli(['downloads', 'save', String(download.id), '--output', savedDownloadPath]), /EEXIST|exist/i, 'download retrieval never overwrites an existing client file');
   await client.call('page.type', { tabId, selector: '#name', text: 'Browser Agent' });
   await client.call('page.click', { tabId, selector: '#submit' });
   assert.equal(await client.call('page.evaluate', { tabId, expression: 'document.querySelector("#result").textContent' }), 'Hello Browser Agent');
@@ -180,7 +239,7 @@ try {
   const orinIdentity = identities.find(browser => browser.connected && browser.id !== mainIdentity.id);
   assert.ok(orinIdentity?.id, 'profiles have independent installation UUIDs');
   await cli(['--browser', orinIdentity.id, 'browser', 'name', 'orin']);
-  const orinClient = createClient({ browser: 'orin' });
+  const orinClient = createClient({ port, browser: 'orin' });
   assert.equal((await cli(['--browser', 'main', 'browser'])).id, mainIdentity.id);
   assert.equal((await cli(['--browser', 'orin', 'browser'])).id, orinIdentity.id);
   const orinPage = await context2.newPage();
@@ -206,7 +265,7 @@ try {
   execFileSync(process.env.AGENT_BROWSER_FFMPEG || 'ffmpeg', ['-v', 'error', '-xerror', '-i', recorded.path, '-f', 'null', '-'], { windowsHide: true, timeout: 15000 });
 
   await bridge.close();
-  bridge = createBridge({ port: 19333, names: names() });
+  bridge = createBridge({ port, names: names() });
   await bridge.listen();
   await eventually(async () => (await qualifiedStatus('main')).connected && (await qualifiedStatus('orin')).connected, 'both named profiles reconnect after bridge restart without popup interaction');
   assert.ok((await textTool('tabs_list')).some(tab => tab.id === tabId), 'MCP works after bridge restart without popup interaction');
