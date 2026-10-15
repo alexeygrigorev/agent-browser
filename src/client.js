@@ -1,8 +1,10 @@
 import { launchBridge } from './launcher.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { stat } from 'node:fs/promises';
+import { stat, open, unlink } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 
 export function getPort(value = process.env.AGENT_BROWSER_PORT || '19333') {
   const port = Number(value);
@@ -79,6 +81,33 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
   }
   const client = {
     stageFile,
+    async saveDownload(id, output, options = {}) {
+      if (!Number.isInteger(id) || id < 0 || typeof output !== 'string' || !output.trim()) throw new Error('Download save requires a non-negative integer ID and output path');
+      const selectedBrowser = options.browser ?? browser;
+      if (selectedBrowser !== undefined && (typeof selectedBrowser !== 'string' || !selectedBrowser.trim())) throw new Error('Browser must be a non-empty nickname or ID');
+      const path = resolve(output);
+      // Acquire the destination exclusively before any network activity. Cleanup
+      // is only permitted once this invocation has created the file.
+      const file = await open(path, 'wx');
+      let complete = false;
+      try {
+        await ensureReady(selectedBrowser);
+        const query = new URLSearchParams();
+        if (selectedBrowser !== undefined) query.set('browser', selectedBrowser);
+        const response = await fetch(`http://127.0.0.1:${port}/downloads/${id}/file${query.size ? `?${query}` : ''}`, { signal: AbortSignal.timeout(timeout) });
+        if (!response.ok) {
+          const payload = await response.json();
+          throw new Error(typeof payload.error === 'string' ? payload.error : payload.error?.message || `Download HTTP ${response.status}`);
+        }
+        if (!response.body) throw new Error('Download response has no file body');
+        await pipeline(Readable.fromWeb(response.body), file.createWriteStream());
+        complete = true;
+        return { id, path, bytes: (await stat(path)).size };
+      } finally {
+        await file.close();
+        if (!complete) await unlink(path).catch(() => {});
+      }
+    },
     async upload(tabId, selector, files, options = {}) {
       if (!Number.isInteger(tabId) || typeof selector !== 'string' || !selector.trim() || !Array.isArray(files) || !files.length || files.some(path => typeof path !== 'string' || !path)) throw new Error('Upload requires tabId, selector and one or more file paths');
       await Promise.all(files.map(validateFile));

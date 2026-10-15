@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, getPort } from '../src/client.js';
@@ -32,6 +32,34 @@ test('client needs no authentication, unwraps results, and reports browser error
 test('ports must be valid TCP ports', () => {
   assert.equal(getPort('19333'), 19333);
   for (const port of ['0', '65536', 'abc', '1.5']) assert.throws(() => getPort(port));
+});
+
+test('download save streams bytes, preserves existing files, and cleans interrupted new files', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-browser-save-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bytes = Buffer.from([0, 255, 128, 1, 2, 3]);
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    requests.push(req.url);
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': req.url.includes('/2/') ? 5000 : bytes.length });
+    if (req.url.includes('/2/')) { res.write(bytes); setTimeout(() => res.destroy(), 20); }
+    else res.end(bytes);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = createClient({ port: server.address().port, browser: 'main' });
+  const path = join(directory, 'saved.bin');
+  assert.deepEqual(await client.saveDownload(1, path), { id: 1, path, bytes: bytes.length });
+  assert.deepEqual(await readFile(path), bytes);
+  assert.equal(requests[0], '/downloads/1/file?browser=main');
+  await assert.rejects(client.saveDownload(1, path), /EEXIST/);
+  assert.deepEqual(await readFile(path), bytes);
+  assert.equal(requests.length, 1, 'existing files do not trigger requests');
+  const partial = join(directory, 'partial.bin');
+  await assert.rejects(client.saveDownload(2, partial, { browser: 'orin' }));
+  await assert.rejects(stat(partial), error => error.code === 'ENOENT');
+  assert.equal(requests[1], '/downloads/2/file?browser=orin');
+  await assert.rejects(client.saveDownload(-1, partial), /non-negative integer/);
 });
 
 test('uploads stage client bytes and original filename before assigning desktop paths', async t => {

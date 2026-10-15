@@ -11,6 +11,7 @@ const definitions = [
   ['downloads.list', 'List browser downloads', object({ limit: { type: 'integer', minimum: 1, maximum: 100 }, state: { type: 'string', enum: ['in_progress', 'interrupted', 'complete'] } })],
   ['downloads.info', 'Inspect a download including its absolute desktop filename', object({ id: { type: 'integer' } })],
   ['downloads.wait', 'Wait for a download to complete', object({ id: { type: 'integer' }, timeoutMs: { type: 'integer', minimum: 1, maximum: 25000 } })],
+  ['downloads.save', 'Copy a completed browser download to the MCP client machine without overwriting files', object({ id: { type: 'integer', minimum: 0 }, output: string('New output file path on the MCP client machine') })],
   ['groups.list', 'List managed browser tab groups', object({})],
   ['groups.manage', 'Add a tab to a managed group', object({ tabId, title: string('Group title'), color: { type: 'string', enum: ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] } })],
   ['groups.release', 'Release a tab from its managed group', object({ tabId })],
@@ -35,7 +36,8 @@ const definitions = [
 ];
 for (const [method, , schema] of definitions) {
   schema.properties.browser = string('Optional browser nickname or ID to select');
-  const required = ['tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop', 'downloads.start', 'downloads.list', 'downloads.info', 'downloads.wait', 'groups.list'].includes(method) ? [] : ['tabId'];
+  const required = ['tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop', 'downloads.start', 'downloads.list', 'downloads.info', 'downloads.wait', 'downloads.save', 'groups.list'].includes(method) ? [] : ['tabId'];
+  if (method === 'downloads.save') required.push('id', 'output');
   if (method === 'page.upload') required.push('selector', 'files');
   if (method === 'downloads.start') required.push('url');
   if (['downloads.info', 'downloads.wait'].includes(method)) required.push('id');
@@ -62,6 +64,7 @@ export async function startMcp(client) {
       const { browser, ...args } = params.arguments || {};
       const result = definition[0] === 'page.upload'
         ? await client.upload(args.tabId, args.selector, args.files, { browser })
+        : definition[0] === 'downloads.save' ? await client.saveDownload(args.id, args.output, { browser })
         : await client.call(definition[0], args, { browser });
       if (definition[0] === 'page.screenshot') {
         const dataUrl = typeof result === 'string' ? result : result?.dataUrl;

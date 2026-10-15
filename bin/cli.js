@@ -13,6 +13,7 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   browsers                 List connected browsers
   upload <tabId> <selector> <file...>  Upload files from this computer
   downloads [list|info <id>|wait <id>|start <URL> [--filename <relative>]]
+  downloads save <id> --output <path>  Copy a completed download to this computer
   download <URL> [--filename <relative>]  Start a browser download
   screenshot <tabId> --output <path>  Save a PNG screenshot (new file)
   record start <tabId> [--output <path>]  Start a recording
@@ -73,6 +74,11 @@ async function main() {
   if (command === 'downloads' || command === 'download') {
     const parts = command === 'download' ? ['start', ...args] : (args.length ? args : ['list']);
     const [action, value, flag, filename] = parts;
+    if (action === 'save') {
+      if (parts.length !== 4 || flag !== '--output') throw new Error('Usage: downloads save <id> --output <path>');
+      console.log(JSON.stringify(await client.saveDownload(Number(value), filename), null, 2));
+      return;
+    }
     let params;
     if (action === 'list' && parts.length === 1) params = {};
     else if (['info', 'wait'].includes(action) && parts.length === 2 && Number.isInteger(Number(value))) params = { id: Number(value) };
