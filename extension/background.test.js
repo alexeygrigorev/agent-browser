@@ -14,6 +14,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   let generatedIds = 0;
   let timerId = 0;
   const timers = new Map();
+  const downloads = new Map([[11, { id: 11, url: 'https://example.com/file.txt', filename: 'C:\\Downloads\\file.txt', state: 'in_progress', exists: true, bytesReceived: 4, totalBytes: 12, mime: 'text/plain' }]]);
   const chrome = {
     storage: { local: {
       get: async () => ({ ...stored }), set: async value => Object.assign(stored, value),
@@ -41,6 +42,13 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
     },
     tabs: { query: async () => [{ id: 7, title: 'Signed in', url: 'https://example.com', active: true }],
       create: async params => params, update: async (tabId, params) => ({ tabId, ...params }), remove: async () => {} },
+    downloads: {
+      download: async params => { calls.push(['downloads.download', params]); return 11; },
+      search: async query => {
+        calls.push(['downloads.search', query]);
+        return query.id === undefined ? [...downloads.values()].filter(item => !query.state || item.state === query.state).slice(0, query.limit) : [downloads.get(query.id)].filter(Boolean);
+      }
+    },
     alarms: { create() {}, onAlarm: { addListener(fn) { alarm = fn; } } },
     runtime: { id: 'extension-id', onMessage: { addListener(fn) { listener = fn; } } }
   };
@@ -56,7 +64,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   });
   vm.runInContext(await readFile(new URL('./background.js', import.meta.url), 'utf8'), context);
   await new Promise(resolve => setImmediate(resolve));
-  return { calls, stored, socket,
+  return { calls, stored, socket, downloads,
     currentSocket: () => socket,
     timers,
     runTimer: async delay => {
@@ -288,4 +296,47 @@ test('rejects uploads to non-file controls and single-file controls with multipl
   assert.equal(invalid.calls.some(([method]) => method === 'DOM.setFileInputFiles'), false);
   const single = await setup({ uploadNode: { localName: 'input', attributes: ['type', 'file'] } });
   assert.match((await single.command('page.upload', { tabId: 7, selector: '#file', files: ['/tmp/one', '/tmp/two'] })).error, /multiple files/);
+});
+
+test('downloads return native saved paths, support bounded filtering, and avoid save dialogs', async () => {
+  const { command, calls } = await setup();
+  const result = await command('downloads.start', { url: 'https://example.com/file.txt', filename: 'agent/file.txt' });
+  assert.equal(result.result.filename, 'C:\\Downloads\\file.txt');
+  const options = calls.find(([method]) => method === 'downloads.download')[1];
+  assert.equal(options.saveAs, false);
+  assert.equal(options.conflictAction, 'uniquify');
+  assert.equal(options.filename, 'agent/file.txt');
+  assert.equal((await command('downloads.info', { id: 11 })).result.id, 11);
+  assert.equal((await command('downloads.list', { state: 'in_progress', limit: 5 })).result.length, 1);
+  assert.match((await command('downloads.list', { limit: 101 })).error, /limit/);
+  assert.match((await command('downloads.start', { url: 'file:///etc/passwd' })).error, /http, https, or data/);
+  assert.match((await command('downloads.info', { id: 99 })).error, /No download/);
+});
+
+test('waiting for downloads does not block page commands and reports completion', async () => {
+  const { command, downloads, runTimer, socket } = await setup();
+  const waiting = command('downloads.wait', { id: 11 });
+  await new Promise(resolve => setImmediate(resolve));
+  const tabs = await command('tabs.list');
+  assert.equal(tabs.result[0].id, 7);
+  downloads.get(11).state = 'complete';
+  await runTimer(200);
+  await waiting;
+  assert.ok(socket.sent.some(message => message.result?.state === 'complete'));
+});
+
+test('download interruption includes the saved path and pause revokes pending waits', async () => {
+  const { command, downloads, message, runTimer } = await setup();
+  downloads.get(11).state = 'interrupted';
+  downloads.get(11).error = 'NETWORK_FAILED';
+  const interrupted = await command('downloads.wait', { id: 11 });
+  assert.match(interrupted.error, /NETWORK_FAILED/);
+  assert.match(interrupted.error, /Downloads/);
+  assert.match((await command('downloads.wait', { id: 11, timeoutMs: 30000 })).error, /timeoutMs/);
+  downloads.get(11).state = 'in_progress';
+  const waiting = command('downloads.wait', { id: 11 });
+  await new Promise(resolve => setImmediate(resolve));
+  await message({ type: 'disconnect' });
+  await runTimer(200);
+  await waiting;
 });

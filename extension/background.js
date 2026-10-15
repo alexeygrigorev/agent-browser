@@ -73,6 +73,30 @@ async function upload(tabId, { selector, files }) {
   return result.result.value;
 }
 
+function downloadMetadata(item) {
+  return { id: item.id, url: item.url, filename: item.filename, state: item.state, exists: item.exists,
+    bytesReceived: item.bytesReceived, totalBytes: item.totalBytes, mime: item.mime, error: item.error || null };
+}
+async function downloadInfo(id) {
+  if (!Number.isInteger(id) || id < 0) throw new Error('Download id must be a non-negative integer');
+  const [item] = await chrome.downloads.search({ id });
+  if (!item) throw new Error(`No download with id ${id}`);
+  return downloadMetadata(item);
+}
+async function waitForDownload({ id, timeoutMs = 20000 }, requestedGeneration) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 25000) throw new Error('timeoutMs must be between 1 and 25000');
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
+    const item = await downloadInfo(id);
+    if (item.state === 'complete') return item;
+    if (item.state === 'interrupted') throw new Error(`Download interrupted: ${item.error || 'unknown reason'}${item.filename ? ` (${item.filename})` : ''}`);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`Download ${id} did not complete within ${timeoutMs}ms${item.filename ? ` (${item.filename})` : ''}`);
+    await new Promise(resolve => setTimeout(resolve, Math.min(200, remaining)));
+  }
+}
+
 // Runs in the page, with no access to extension secrets or privileges.
 function snapshot({ maxLength = 50000 } = {}) {
   const selector = element => {
@@ -115,6 +139,19 @@ function targetAction({ selector, action, text, clear = true }) {
 }
 
 async function dispatch(method, params = {}) {
+  if (method === 'downloads.start') {
+    if (typeof params.url !== 'string' || !/^(https?:|data:)/i.test(params.url)) throw new Error('Download URL must use http, https, or data');
+    if (params.filename !== undefined && (typeof params.filename !== 'string' || !params.filename)) throw new Error('filename must be a non-empty path relative to the Downloads directory');
+    const id = await chrome.downloads.download({ url: params.url, ...(params.filename === undefined ? {} : { filename: params.filename }), saveAs: false, conflictAction: 'uniquify' });
+    return downloadInfo(id);
+  }
+  if (method === 'downloads.info') return downloadInfo(params.id);
+  if (method === 'downloads.list') {
+    const limit = params.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('limit must be an integer between 1 and 100');
+    if (params.state !== undefined && !['in_progress', 'complete', 'interrupted'].includes(params.state)) throw new Error('Unknown download state');
+    return (await chrome.downloads.search({ limit, orderBy: ['-startTime'], ...(params.state === undefined ? {} : { state: params.state }) })).map(downloadMetadata);
+  }
   if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status }) => ({ id, windowId, title, url, active, status }));
   if (method === 'tabs.create') return chrome.tabs.create({ url: params.url || 'about:blank', active: params.active ?? true });
   const tabId = params.tabId;
@@ -191,12 +228,16 @@ function connect() {
     if (!enabled || !message.id || typeof message.method !== 'string') return;
     const requestedGeneration = generation;
     try {
-      const work = commandQueue.then(() => {
+      const execute = () => {
         if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
         activeGeneration = requestedGeneration;
-        return dispatch(message.method, message.params);
-      });
-      commandQueue = work.catch(() => {});
+        return message.method === 'downloads.wait'
+          ? waitForDownload(message.params || {}, requestedGeneration)
+          : dispatch(message.method, message.params);
+      };
+      // Waiting for a transfer must not prevent an agent from continuing page actions.
+      const work = message.method === 'downloads.wait' ? execute() : commandQueue.then(execute);
+      if (message.method !== 'downloads.wait') commandQueue = work.catch(() => {});
       const result = await work;
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: message.id, result: result ?? null }));
     } catch (error) {
