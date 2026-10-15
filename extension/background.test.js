@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
-async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) } } = {}) {
+async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) }, uploadNode = { localName: 'input', attributes: ['type', 'file', 'multiple', ''] } } = {}) {
   const calls = [];
   const stored = { ...config };
   let listener;
@@ -25,6 +25,11 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
       sendCommand: async (target, method, params) => {
         calls.push([method, target, params]);
         await beforeCommand(method);
+        if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+        if (method === 'DOM.querySelector') return { nodeId: 2 };
+        if (method === 'DOM.describeNode') return { node: uploadNode };
+        if (method === 'DOM.resolveNode') return { object: { objectId: 'upload-input' } };
+        if (method === 'Runtime.callFunctionOn') return { result: { value: { files: [{ name: 'report.txt', size: 12, type: 'text/plain' }] } } };
         if (method === 'Page.getLayoutMetrics') return { cssContentSize: { x: 0, y: 0, width: 1200, height: 4000 } };
         if (method === 'Runtime.evaluate') {
           const value = params.expression.includes('function snapshot') ? { title: 'Page', text: 'Signed in', elements: [] }
@@ -261,4 +266,26 @@ test('old bridges can acknowledge connection without browser metadata', async ()
   assert.equal(state.browser.id, stored.browserId);
   assert.equal(state.browser.connected, true);
   assert.match(state.status, /browser control enabled/);
+});
+
+test('uploads browser-machine files through the selected file input and dispatches change events', async () => {
+  const { command, calls } = await setup();
+  const result = await command('page.upload', { tabId: 7, selector: '#files', files: ['C:\\files\\report.txt'] });
+  assert.equal(result.result.files[0].name, 'report.txt');
+  const setFiles = calls.find(([method]) => method === 'DOM.setFileInputFiles')[2];
+  assert.equal(setFiles.nodeId, 2);
+  assert.equal(setFiles.files[0], 'C:\\files\\report.txt');
+  const events = calls.find(([method]) => method === 'Runtime.callFunctionOn')[2];
+  assert.equal(events.objectId, 'upload-input');
+  assert.match(events.functionDeclaration, /new Event\('input'/);
+  assert.match(events.functionDeclaration, /new Event\('change'/);
+  assert.match((await command('page.upload', { tabId: 7, selector: '#files', files: ['relative.txt'] })).error, /absolute paths/);
+});
+
+test('rejects uploads to non-file controls and single-file controls with multiple paths', async () => {
+  const invalid = await setup({ uploadNode: { localName: 'input', attributes: ['type', 'text'] } });
+  assert.match((await invalid.command('page.upload', { tabId: 7, selector: '#name', files: ['/tmp/report.txt'] })).error, /input\[type=file\]/);
+  assert.equal(invalid.calls.some(([method]) => method === 'DOM.setFileInputFiles'), false);
+  const single = await setup({ uploadNode: { localName: 'input', attributes: ['type', 'file'] } });
+  assert.match((await single.command('page.upload', { tabId: 7, selector: '#file', files: ['/tmp/one', '/tmp/two'] })).error, /multiple files/);
 });

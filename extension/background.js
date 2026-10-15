@@ -48,6 +48,31 @@ async function pageCall(tabId, fn, params) {
   return evaluate(tabId, `(${fn.toString()})(${JSON.stringify(params)})`);
 }
 
+async function upload(tabId, { selector, files }) {
+  if (typeof selector !== 'string' || !selector) throw new Error('selector is required');
+  if (!Array.isArray(files) || !files.length || files.some(file => typeof file !== 'string' || !/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(file))) throw new Error('files must contain absolute paths on the browser machine');
+  const { root } = await cdp(tabId, 'DOM.getDocument', { depth: 0 });
+  const { nodeId } = await cdp(tabId, 'DOM.querySelector', { nodeId: root.nodeId, selector });
+  if (!nodeId) throw new Error(`No element matches ${selector}`);
+  const { node } = await cdp(tabId, 'DOM.describeNode', { nodeId });
+  const attributes = {};
+  for (let index = 0; index < (node.attributes || []).length; index += 2) attributes[node.attributes[index]] = node.attributes[index + 1];
+  if (node.localName !== 'input' || attributes.type?.toLowerCase() !== 'file') throw new Error('Upload target must be an input[type=file]');
+  if (files.length > 1 && !Object.hasOwn(attributes, 'multiple')) throw new Error('Upload target does not accept multiple files');
+  await cdp(tabId, 'DOM.setFileInputFiles', { nodeId, files });
+  const { object } = await cdp(tabId, 'DOM.resolveNode', { nodeId });
+  const result = await cdp(tabId, 'Runtime.callFunctionOn', {
+    objectId: object.objectId,
+    functionDeclaration: `function () {
+      this.dispatchEvent(new Event('input', { bubbles: true }));
+      this.dispatchEvent(new Event('change', { bubbles: true }));
+      return { files: Array.from(this.files, file => ({ name: file.name, size: file.size, type: file.type })) };
+    }`, returnByValue: true
+  });
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+  return result.result.value;
+}
+
 // Runs in the page, with no access to extension secrets or privileges.
 function snapshot({ maxLength = 50000 } = {}) {
   const selector = element => {
@@ -96,6 +121,7 @@ async function dispatch(method, params = {}) {
   if (!Number.isInteger(tabId)) throw new Error('tabId must be an integer');
   if (method === 'tabs.close') { await chrome.tabs.remove(tabId); return { closed: true }; }
   if (method === 'tabs.navigate') return chrome.tabs.update(tabId, { url: params.url });
+  if (method === 'page.upload') return upload(tabId, params);
   if (method === 'page.snapshot') return pageCall(tabId, snapshot, params);
   if (method === 'page.evaluate') {
     if (typeof params.expression !== 'string') throw new Error('expression must be a string');
