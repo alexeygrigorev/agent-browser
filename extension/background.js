@@ -13,10 +13,14 @@ let activeGeneration = 0;
 let commandQueue = Promise.resolve();
 const attached = new Set();
 const initializing = new Map();
+const managedGroups = new Map();
+let groupQueue = Promise.resolve();
 const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError', 'browserId']).then(async config => {
   browserId = config.browserId || crypto.randomUUID();
   if (!config.browserId) await chrome.storage.local.set({ browserId });
   browser = { id: browserId, connected: false };
+  const session = await chrome.storage.session.get('managedGroups');
+  for (const group of session.managedGroups || []) if (group.ownerId === browserId) managedGroups.set(group.windowId, group);
   await chrome.storage.local.remove('token');
   enabled = config.paused !== true && (config.enabled !== false || !!config.connectionError);
   if (enabled && config.connectionError) {
@@ -29,7 +33,13 @@ const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError'
 
 async function attach(tabId) {
   if (!attached.has(tabId)) {
-    if (!initializing.has(tabId)) initializing.set(tabId, chrome.debugger.attach({ tabId }, '1.3').then(() => attached.add(tabId)).finally(() => initializing.delete(tabId)));
+    if (!initializing.has(tabId)) initializing.set(tabId, (async () => {
+      const requestedGeneration = activeGeneration;
+      await manageTab(tabId);
+      if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
+      await chrome.debugger.attach({ tabId }, '1.3');
+      attached.add(tabId);
+    })().finally(() => initializing.delete(tabId)));
     await initializing.get(tabId);
   }
 }
@@ -97,6 +107,58 @@ async function waitForDownload({ id, timeoutMs = 20000 }, requestedGeneration) {
   }
 }
 
+const groupTitle = () => `🤖 Agent · ${browser?.name || 'browser'}`;
+const saveGroups = () => chrome.storage.session.set({ managedGroups: [...managedGroups.values()] });
+function groupOperation(fn) {
+  const work = groupQueue.then(fn);
+  groupQueue = work.catch(() => {});
+  return work;
+}
+async function existingGroup(windowId) {
+  const known = managedGroups.get(windowId);
+  if (!known) return;
+  try {
+    const group = await chrome.tabGroups.get(known.id);
+    if (group.windowId === windowId) return { ...group, managed: true };
+  } catch {}
+  managedGroups.delete(windowId);
+  await saveGroups();
+}
+function manageTab(tabId, { title, color } = {}) {
+  const requestedGeneration = generation;
+  return groupOperation(async () => {
+    if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
+    if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 80)) throw new Error('Group title must contain 1 to 80 characters');
+    if (color !== undefined && !['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'].includes(color)) throw new Error('Unknown tab group color');
+    const tab = await chrome.tabs.get(tabId);
+    let group = await existingGroup(tab.windowId);
+    if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
+    if (!group) {
+      const id = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId: tab.windowId } });
+      const known = { id, windowId: tab.windowId, ownerId: browserId, autoLabel: title === undefined };
+      managedGroups.set(tab.windowId, known);
+      await saveGroups();
+      group = await chrome.tabGroups.update(id, { title: title ?? groupTitle(), color: color ?? 'blue', collapsed: false });
+    } else {
+      if (tab.groupId !== group.id) await chrome.tabs.group({ tabIds: [tabId], groupId: group.id });
+      if (title !== undefined || color !== undefined) {
+        group = await chrome.tabGroups.update(group.id, { ...(title === undefined ? {} : { title }), ...(color === undefined ? {} : { color }) });
+        if (title !== undefined) { managedGroups.get(tab.windowId).autoLabel = false; await saveGroups(); }
+      }
+    }
+    return { ...group, managed: true };
+  });
+}
+function renameManagedGroups() {
+  return groupOperation(async () => {
+    for (const known of [...managedGroups.values()]) {
+      if (!known.autoLabel) continue;
+      const group = await existingGroup(known.windowId);
+      if (group) await chrome.tabGroups.update(group.id, { title: groupTitle() }).catch(() => {});
+    }
+  });
+}
+
 // Runs in the page, with no access to extension secrets or privileges.
 function snapshot({ maxLength = 50000 } = {}) {
   const selector = element => {
@@ -139,6 +201,10 @@ function targetAction({ selector, action, text, clear = true }) {
 }
 
 async function dispatch(method, params = {}) {
+  if (method === 'groups.list') {
+    const groups = await Promise.all([...managedGroups.keys()].map(existingGroup));
+    return groups.filter(Boolean);
+  }
   if (method === 'downloads.start') {
     if (typeof params.url !== 'string' || !/^(https?:|data:)/i.test(params.url)) throw new Error('Download URL must use http, https, or data');
     if (params.filename !== undefined && (typeof params.filename !== 'string' || !params.filename)) throw new Error('filename must be a non-empty path relative to the Downloads directory');
@@ -152,12 +218,28 @@ async function dispatch(method, params = {}) {
     if (params.state !== undefined && !['in_progress', 'complete', 'interrupted'].includes(params.state)) throw new Error('Unknown download state');
     return (await chrome.downloads.search({ limit, orderBy: ['-startTime'], ...(params.state === undefined ? {} : { state: params.state }) })).map(downloadMetadata);
   }
-  if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status }) => ({ id, windowId, title, url, active, status }));
-  if (method === 'tabs.create') return chrome.tabs.create({ url: params.url || 'about:blank', active: params.active ?? true });
+  if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId }) => ({ id, windowId, title, url, active, status, groupId, managed: [...managedGroups.values()].some(group => group.id === groupId) }));
+  if (method === 'tabs.create') {
+    const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: params.active ?? true });
+    await manageTab(tab.id);
+    return chrome.tabs.get(tab.id);
+  }
   const tabId = params.tabId;
   if (!Number.isInteger(tabId)) throw new Error('tabId must be an integer');
   if (method === 'tabs.close') { await chrome.tabs.remove(tabId); return { closed: true }; }
-  if (method === 'tabs.navigate') return chrome.tabs.update(tabId, { url: params.url });
+  if (method === 'groups.manage') return manageTab(tabId, params);
+  if (method === 'groups.release') {
+    const tab = await chrome.tabs.get(tabId);
+    const group = await existingGroup(tab.windowId);
+    if (!group || tab.groupId !== group.id) return { tabId, released: false };
+    await chrome.tabs.ungroup([tabId]);
+    if (attached.has(tabId)) { await chrome.debugger.detach({ tabId }); attached.delete(tabId); }
+    return { tabId, released: true };
+  }
+  if (method === 'tabs.navigate') {
+    await manageTab(tabId);
+    return chrome.tabs.update(tabId, { url: params.url });
+  }
   if (method === 'page.upload') return upload(tabId, params);
   if (method === 'page.snapshot') return pageCall(tabId, snapshot, params);
   if (method === 'page.evaluate') {
@@ -218,10 +300,12 @@ function connect() {
       retryDelay = 1000;
       status = 'Connected — browser control enabled';
       browser = { ...browser, ...message.browser, connected: true };
+      renameManagedGroups().catch(() => {});
       return;
     }
     if (message.type === 'browser') {
       browser = { ...browser, ...message.browser };
+      renameManagedGroups().catch(() => {});
       return;
     }
     if (message.type === 'pong') return;
@@ -286,6 +370,10 @@ async function disconnect() {
   attached.clear();
 }
 chrome.debugger.onDetach.addListener(({ tabId }) => attached.delete(tabId));
+chrome.tabGroups.onRemoved.addListener(group => {
+  for (const [windowId, known] of managedGroups) if (known.id === group.id) managedGroups.delete(windowId);
+  saveGroups().catch(() => {});
+});
 chrome.alarms.create('reconnect', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(async ({ name }) => {
   await startup;

@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
-async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) }, uploadNode = { localName: 'input', attributes: ['type', 'file', 'multiple', ''] } } = {}) {
+async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) }, sessionConfig = {}, initialGroups = [], uploadNode = { localName: 'input', attributes: ['type', 'file', 'multiple', ''] } } = {}) {
   const calls = [];
   const stored = { ...config };
   let listener;
@@ -14,12 +14,21 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   let generatedIds = 0;
   let timerId = 0;
   const timers = new Map();
+  const session = { ...sessionConfig };
+  const tabs = new Map([
+    [7, { id: 7, windowId: 1, title: 'Signed in', url: 'https://example.com', active: true, groupId: -1 }],
+    [8, { id: 8, windowId: 1, title: 'Other', url: 'https://example.org', active: false, groupId: -1 }],
+    [9, { id: 9, windowId: 2, title: 'Second window', url: 'https://example.net', active: false, groupId: -1 }]
+  ]);
+  const nativeGroups = new Map(initialGroups.map(group => [group.id, { ...group }]));
+  let groupId = 100;
+  let groupRemoved;
   const downloads = new Map([[11, { id: 11, url: 'https://example.com/file.txt', filename: 'C:\\Downloads\\file.txt', state: 'in_progress', exists: true, bytesReceived: 4, totalBytes: 12, mime: 'text/plain' }]]);
   const chrome = {
     storage: { local: {
       get: async () => ({ ...stored }), set: async value => Object.assign(stored, value),
       remove: async key => { delete stored[key]; }
-    } },
+    }, session: { get: async () => ({ ...session }), set: async value => Object.assign(session, structuredClone(value)) } },
     debugger: {
       attach: async target => calls.push(['attach', target]),
       detach: async target => calls.push(['detach', target]),
@@ -40,8 +49,33 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
         return { data: 'image' };
       }, onDetach: { addListener() {} }
     },
-    tabs: { query: async () => [{ id: 7, title: 'Signed in', url: 'https://example.com', active: true }],
-      create: async params => params, update: async (tabId, params) => ({ tabId, ...params }), remove: async () => {} },
+    tabs: {
+      get: async id => { if (!tabs.has(id)) throw new Error('No tab'); return { ...tabs.get(id) }; },
+      query: async query => [...tabs.values()].filter(tab => query.groupId === undefined || tab.groupId === query.groupId).map(tab => ({ ...tab })),
+      create: async params => { const tab = { id: 20, windowId: 1, groupId: -1, ...params }; tabs.set(tab.id, tab); return { ...tab }; },
+      update: async (id, params) => { Object.assign(tabs.get(id), params); return { ...tabs.get(id) }; },
+      remove: async id => { tabs.delete(id); },
+      group: async params => {
+        calls.push(['tabs.group', params]);
+        const id = params.groupId ?? groupId++;
+        if (!nativeGroups.has(id)) nativeGroups.set(id, { id, windowId: params.createProperties.windowId, title: '', color: 'grey', collapsed: false });
+        for (const tabId of params.tabIds) tabs.get(tabId).groupId = id;
+        return id;
+      },
+      ungroup: async ids => {
+        calls.push(['tabs.ungroup', ids]);
+        for (const id of ids) {
+          const previous = tabs.get(id).groupId;
+          tabs.get(id).groupId = -1;
+          if (![...tabs.values()].some(tab => tab.groupId === previous)) { nativeGroups.delete(previous); groupRemoved?.({ id: previous }); }
+        }
+      }
+    },
+    tabGroups: {
+      get: async id => { if (!nativeGroups.has(id)) throw new Error('Group closed'); return { ...nativeGroups.get(id) }; },
+      update: async (id, params) => { calls.push(['tabGroups.update', id, params]); Object.assign(nativeGroups.get(id), params); return { ...nativeGroups.get(id) }; },
+      onRemoved: { addListener(fn) { groupRemoved = fn; } }
+    },
     downloads: {
       download: async params => { calls.push(['downloads.download', params]); return 11; },
       search: async query => {
@@ -64,7 +98,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   });
   vm.runInContext(await readFile(new URL('./background.js', import.meta.url), 'utf8'), context);
   await new Promise(resolve => setImmediate(resolve));
-  return { calls, stored, socket, downloads,
+  return { calls, stored, socket, downloads, tabs, nativeGroups, session,
     currentSocket: () => socket,
     timers,
     runTimer: async delay => {
@@ -339,4 +373,80 @@ test('download interruption includes the saved path and pause revokes pending wa
   await message({ type: 'disconnect' });
   await runTimer(200);
   await waiting;
+});
+
+test('read-only tab listing leaves tabs untouched and CDP control visibly groups its tab', async () => {
+  const { command, calls, socket, session, stored } = await setup();
+  assert.equal((await command('tabs.list')).result[0].managed, false);
+  assert.equal(calls.some(([method]) => method === 'tabs.group'), false);
+  await socket.onmessage({ data: JSON.stringify({ type: 'ready', browser: { name: 'main' } }) });
+  await command('page.snapshot', { tabId: 7 });
+  const group = (await command('groups.list')).result[0];
+  assert.equal(group.title, '🤖 Agent · main');
+  assert.equal(group.color, 'blue');
+  const tab = (await command('tabs.list')).result.find(tab => tab.id === 7);
+  assert.equal(tab.groupId, group.id);
+  assert.equal(tab.managed, true);
+  assert.equal(session.managedGroups[0].ownerId, stored.browserId);
+});
+
+test('created and navigated tabs share an owned group per window', async () => {
+  const { command, calls } = await setup();
+  const created = await command('tabs.create', { url: 'https://example.com/new' });
+  assert.equal(created.result.groupId, 100);
+  await command('tabs.navigate', { tabId: 7, url: 'https://example.com/changed' });
+  await command('groups.manage', { tabId: 9 });
+  const groups = (await command('groups.list')).result;
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].windowId, 1);
+  assert.equal(groups[1].windowId, 2);
+  const grouped = calls.filter(([method]) => method === 'tabs.group');
+  assert.equal(grouped[1][1].groupId, 100);
+});
+
+test('release ungroups and detaches only a managed tab, with a new group after the old one closes', async () => {
+  const { command, calls, tabs, nativeGroups } = await setup();
+  nativeGroups.set(55, { id: 55, windowId: 1, title: 'Personal', color: 'red' });
+  tabs.get(8).groupId = 55;
+  assert.equal((await command('groups.release', { tabId: 8 })).result.released, false);
+  await command('page.snapshot', { tabId: 7 });
+  assert.equal((await command('groups.release', { tabId: 7 })).result.released, true);
+  assert.ok(calls.some(([method]) => method === 'detach'));
+  assert.equal((await command('tabs.list')).result.find(tab => tab.id === 7).managed, false);
+  assert.equal((await command('groups.list')).result.length, 0);
+  await command('groups.manage', { tabId: 7 });
+  assert.equal((await command('groups.list')).result[0].id, 101);
+  assert.equal(nativeGroups.get(55).title, 'Personal');
+});
+
+test('browser nickname changes rename owned automatic labels while preserving custom and human titles', async () => {
+  const { command, socket, nativeGroups } = await setup();
+  nativeGroups.set(55, { id: 55, windowId: 1, title: 'Personal', color: 'red' });
+  await command('groups.manage', { tabId: 7 });
+  await command('groups.manage', { tabId: 9, title: 'My workflow', color: 'green' });
+  await socket.onmessage({ data: JSON.stringify({ type: 'browser', browser: { name: 'orin' } }) });
+  await new Promise(resolve => setImmediate(resolve));
+  const groups = (await command('groups.list')).result;
+  assert.equal(groups.find(group => group.windowId === 1).title, '🤖 Agent · orin');
+  assert.equal(groups.find(group => group.windowId === 2).title, 'My workflow');
+  assert.equal(groups.find(group => group.windowId === 2).color, 'green');
+  assert.equal(nativeGroups.get(55).title, 'Personal');
+  assert.match((await command('groups.manage', { tabId: 7, color: 'invalid' })).error, /color/);
+});
+
+test('session-owned groups survive worker restart and title-matching human groups are never hijacked', async () => {
+  const browserId = randomUUID();
+  const owned = await setup({ config: { browserId }, sessionConfig: { managedGroups: [{ id: 44, windowId: 1, ownerId: browserId, autoLabel: true }] }, initialGroups: [{ id: 44, windowId: 1, title: '🤖 Agent · browser', color: 'blue' }] });
+  await owned.command('groups.manage', { tabId: 7 });
+  assert.equal(owned.tabs.get(7).groupId, 44);
+  const fresh = await setup({ config: { browserId }, initialGroups: [{ id: 44, windowId: 1, title: '🤖 Agent · browser', color: 'blue' }] });
+  fresh.tabs.get(7).groupId = 44;
+  fresh.tabs.get(8).groupId = 44;
+  await fresh.command('groups.manage', { tabId: 7 });
+  assert.equal(fresh.tabs.get(7).groupId, 100);
+  assert.equal(fresh.tabs.get(8).groupId, 44);
+  assert.equal(fresh.nativeGroups.get(44).title, '🤖 Agent · browser');
+  const stale = await setup({ config: { browserId }, sessionConfig: { managedGroups: [{ id: 99, windowId: 1, ownerId: browserId, autoLabel: true }] } });
+  await stale.command('groups.manage', { tabId: 7 });
+  assert.equal(stale.tabs.get(7).groupId, 100);
 });
