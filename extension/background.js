@@ -216,7 +216,7 @@ async function dispatch(method, params = {}) {
     if (params.state !== undefined && !['in_progress', 'complete', 'interrupted'].includes(params.state)) throw new Error('Unknown download state');
     return (await chrome.downloads.search({ limit, orderBy: ['-startTime'], ...(params.state === undefined ? {} : { state: params.state }) })).map(downloadMetadata);
   }
-  if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId }) => ({ id, windowId, title, url, active, status, groupId, managed: [...managedGroups.values()].some(group => group.id === groupId) }));
+  if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId, openerTabId }) => ({ id, windowId, title, url, active, status, groupId, ...(openerTabId === undefined ? {} : { openerTabId }), managed: [...managedGroups.values()].some(group => group.id === groupId) }));
   if (method === 'tabs.create') {
     const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: params.active ?? true });
     await manageTab(tab.id);

@@ -55,7 +55,7 @@ If an agent claims only one profile is supported, have it read this checkout's c
 
 ## Managed browser tabs
 
-Tabs created, navigated, or inspected through page commands are automatically placed in a visible agent group labeled with the browser nickname, such as `🤖 Agent · main`. `tabs.list` reports each tab's `groupId` and `managed` state.
+Tabs created, navigated, or inspected through page commands are automatically placed in a visible agent group labeled with the browser nickname, such as `🤖 Agent · main`. `tabs.list` reports each tab's `groupId` and `managed` state. Tabs opened by a page, including `window.open` popups, appear in the list with their `openerTabId`; use that tab ID with the same page, navigation, and close commands.
 
 ```sh
 node bin/cli.js --browser main call groups.list '{}'

@@ -137,6 +137,21 @@ test('lists tabs, dispatches CDP once attached and reports invalid commands', as
   assert.match((await command('unknown', { tabId: 7 })).error, /Unknown method/);
 });
 
+test('lists window.open tabs with their opener and supports page, navigation, and close commands', async () => {
+  const { calls, command, tabs } = await setup();
+  tabs.set(10, { id: 10, windowId: 3, title: 'Popup', url: 'https://example.org/popup', active: true, groupId: -1, openerTabId: 7 });
+
+  const popup = (await command('tabs.list')).result.find(tab => tab.id === 10);
+  assert.equal(popup.openerTabId, 7);
+  assert.equal((await command('page.evaluate', { tabId: popup.id, expression: 'document.title' })).result, 'evaluated');
+  assert.ok(calls.some(([method, target]) => method === 'attach' && target.tabId === 10));
+
+  const navigated = await command('tabs.navigate', { tabId: popup.id, url: 'https://example.com/continued' });
+  assert.equal(navigated.result.url, 'https://example.com/continued');
+  assert.equal((await command('tabs.close', { tabId: popup.id })).result.closed, true);
+  assert.equal(tabs.has(10), false);
+});
+
 test('handles a JavaScript dialog while a page action is blocked on the command queue', async () => {
   let release;
   const blocked = new Promise(resolve => { release = resolve; });

@@ -23,7 +23,7 @@ With multiple profiles connected, avoid unqualified `browser` or page commands u
 
 Get a tab ID from `tabs.list`, then `page.snapshot` for text and selectors. Use observed selectors for clicks/typing and inspect the result. Wait for navigation and asynchronous updates. Timeout/disconnect errors may follow an executed action: inspect before repeating consequential commands.
 
-Agent-created, navigated, and inspected tabs join a visible agent group named for the browser. `tabs.list` exposes `managed` and `groupId`; `groups.list` shows owned groups. To hand a tab back, call `groups.release` with `{tabId}`; this ungroups it and detaches the debugger. Later page commands may manage it again. `groups.manage` takes `{tabId,title?,color?}` when explicitly managing a tab is needed.
+Agent-created, navigated, and inspected tabs join a visible agent group named for the browser. `tabs.list` exposes `managed` and `groupId`. It also lists tabs opened by a page, including `window.open` popups, with their `openerTabId`; use the popup's tab ID with the same page, navigation, and close commands. `groups.list` shows owned groups. To hand a tab back, call `groups.release` with `{tabId}`; this ungroups it and detaches the debugger. Later page commands may manage it again. `groups.manage` takes `{tabId,title?,color?}` when explicitly managing a tab is needed.
 
 PowerShell-safe JSON:
 
