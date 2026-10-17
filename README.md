@@ -192,6 +192,7 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `tabs.create` | `url?`, `active?` |
 | `tabs.close` | `tabId` |
 | `tabs.navigate` | `tabId`, `url` |
+| `dialogs.handle` | `tabId`, `accept`, `promptText?`; handles a JavaScript dialog immediately, even while another page action is waiting |
 | `page.snapshot` | `tabId`, `maxLength?`; returns page text and interactive element selectors |
 | `page.click` | `tabId`, `selector`, or `tabId`, `x`, `y` |
 | `page.type` | `tabId`, `text`, `selector?`, `clear?` (defaults to true) |

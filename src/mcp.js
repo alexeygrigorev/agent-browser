@@ -25,6 +25,7 @@ const definitions = [
   ['tabs.create', 'Create a browser tab', object({ url: string('URL to open'), active: { type: 'boolean' } })],
   ['tabs.close', 'Close a browser tab', object({ tabId })],
   ['tabs.navigate', 'Navigate an existing tab', object({ tabId, url: string('Destination URL') })],
+  ['dialogs.handle', 'Accept or dismiss a JavaScript dialog without waiting for the page-action queue', object({ tabId, accept: { type: 'boolean', description: 'Accept the dialog when true, dismiss it when false' }, promptText: string('Optional text for a JavaScript prompt') })],
   ['page.snapshot', 'Read page text and interactive elements', object({ tabId, maxLength: { type: 'integer' } })],
   ['page.click', 'Click an element by CSS selector or viewport coordinates', object({ tabId, selector: string('CSS selector'), x: { type: 'number' }, y: { type: 'number' } })],
   ['page.type', 'Enter text into an element or current focus', object({ tabId, selector: string('CSS selector'), text: string('Text to enter'), clear: { type: 'boolean', default: true } })],
@@ -44,6 +45,7 @@ for (const [method, , schema] of definitions) {
   if (method === 'recording.stop') required.push('id');
   if (method === 'browser.rename') required.push('name');
   if (method === 'tabs.navigate') required.push('url');
+  if (method === 'dialogs.handle') required.push('accept');
   if (method === 'page.type') required.push('text');
   if (method === 'page.key') required.push('key');
   if (method === 'page.evaluate') required.push('expression');

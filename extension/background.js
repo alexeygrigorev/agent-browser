@@ -224,6 +224,11 @@ async function dispatch(method, params = {}) {
   }
   const tabId = params.tabId;
   if (!Number.isInteger(tabId)) throw new Error('tabId must be an integer');
+  if (method === 'dialogs.handle') {
+    if (typeof params.accept !== 'boolean') throw new Error('accept must be a boolean');
+    if (params.promptText !== undefined && typeof params.promptText !== 'string') throw new Error('promptText must be a string');
+    return cdp(tabId, 'Page.handleJavaScriptDialog', { accept: params.accept, ...(params.promptText === undefined ? {} : { promptText: params.promptText }) });
+  }
   if (method === 'tabs.close') { await chrome.tabs.remove(tabId); return { closed: true }; }
   if (method === 'groups.manage') return manageTab(tabId, params);
   if (method === 'groups.release') {
@@ -317,9 +322,11 @@ function connect() {
           ? waitForDownload(message.params || {}, requestedGeneration)
           : dispatch(message.method, message.params);
       };
-      // Waiting for a transfer must not prevent an agent from continuing page actions.
-      const work = message.method === 'downloads.wait' ? execute() : commandQueue.then(execute);
-      if (message.method !== 'downloads.wait') commandQueue = work.catch(() => {});
+      // Transfers and dialog handling must not wait behind page actions; a dialog
+      // can be the reason an earlier navigation or tab close is still waiting.
+      const bypassQueue = ['downloads.wait', 'dialogs.handle'].includes(message.method);
+      const work = bypassQueue ? execute() : commandQueue.then(execute);
+      if (!bypassQueue) commandQueue = work.catch(() => {});
       const result = await work;
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: message.id, result: result ?? null }));
     } catch (error) {

@@ -137,6 +137,19 @@ test('lists tabs, dispatches CDP once attached and reports invalid commands', as
   assert.match((await command('unknown', { tabId: 7 })).error, /Unknown method/);
 });
 
+test('handles a JavaScript dialog while a page action is blocked on the command queue', async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const { calls, socket, command } = await setup({ beforeCommand: method => method === 'Input.dispatchMouseEvent' ? blocked : undefined });
+  const click = socket.onmessage({ data: JSON.stringify({ id: 'click', method: 'page.click', params: { tabId: 7, x: 10, y: 20 } }) });
+  await new Promise(resolve => setImmediate(resolve));
+  const dialog = await command('dialogs.handle', { tabId: 7, accept: false });
+  assert.deepEqual(dialog.result, { data: 'image' });
+  assert.ok(calls.some(([method, , params]) => method === 'Page.handleJavaScriptDialog' && params.accept === false));
+  release();
+  await click;
+});
+
 test('disconnect revokes access, erases token, and detaches tabs', async () => {
   const { calls, stored, socket, command, message } = await setup();
   await command('page.screenshot', { tabId: 7 });
