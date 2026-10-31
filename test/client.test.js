@@ -189,6 +189,21 @@ test('readiness probes respect the connection deadline when a listener hangs', a
   assert.equal(launches, 0);
 });
 
+test('a final readiness probe cut short by the deadline still reports the disconnected browser', async t => {
+  let checks = 0;
+  // The first probe proves the bridge is alive; later probes hang until the deadline aborts them.
+  const server = http.createServer((req, res) => {
+    if (++checks > 1) return;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ connected: false }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  const client = createClient({ port: server.address().port, autoStart: true, connectTimeout: 400, launcher: () => { throw new Error('must not launch'); } });
+  await assert.rejects(client.call('tabs.list'), /Open Chrome.*not paused/);
+  assert.ok(checks >= 2);
+});
+
 test('readiness retries a reset status socket without launching or repeating the command', async t => {
   let checks = 0, posts = 0, launches = 0;
   const server = http.createServer((req, res) => {

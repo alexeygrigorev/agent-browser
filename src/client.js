@@ -58,12 +58,13 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
   const statusPath = browser => browser === undefined ? '/status' : `/status?browser=${encodeURIComponent(browser)}`;
   async function waitForBrowser(selectedBrowser, bridgeOnly = false) {
     const deadline = Date.now() + connectTimeout;
-    let launched = false;
+    let launched = false, answered = false;
     do {
       try {
         const status = await request(statusPath(selectedBrowser), undefined, Math.max(1, Math.min(2000, deadline - Date.now())));
         if (typeof status?.connected !== 'boolean') throw new Error('Unexpected browser bridge status response');
         if (bridgeOnly || status.connected) return;
+        answered = true;
       } catch (error) {
         // Only an absent listener justifies launching. HTTP, protocol and timeout
         // failures belong to the running bridge and must not spawn another one.
@@ -71,6 +72,10 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
         if (code === 'ECONNREFUSED') {
           if (!autoStart) throw new Error('Browser bridge is unavailable. Check the SSH tunnel or start the local bridge.', { cause: error });
           if (!launched) { launched = true; await launcher(port); }
+        } else if (answered && error.cause?.name === 'TimeoutError' && Date.now() >= deadline) {
+          // The final probe only gets the time left before the deadline. A bridge
+          // that already answered is alive, so report the disconnected browser.
+          break;
         } else if (!['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE'].includes(code)) {
           throw error;
         }
