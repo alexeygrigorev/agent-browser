@@ -202,7 +202,7 @@ export async function processBundle(dir, { transcribe = true, sync, python = pyt
   } else {
     transcript = await readFile(join(dir, 'transcript.json'), 'utf8').then(JSON.parse, () => null);
   }
-  const events = await readEvents(dir);
+  const events = mergeLayers(await readEvents(dir));
   await desktopScreenshots(dir, events, manifest, { run });
   const timeline = buildTimeline({ manifest, events, transcript });
   await writeFile(join(dir, 'timeline.json'), JSON.stringify({ ...timeline, notes }, null, 2) + '\n');

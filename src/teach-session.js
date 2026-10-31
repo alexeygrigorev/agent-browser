@@ -93,6 +93,7 @@ export function createTeachSession({ root = teachRoot(), now = Date.now, browser
       audio: recorder?.audio || state.audio, screen: recorder?.screen || state.screen, hooks: recorder?.hooks || state.hooks, browser, notes };
     await writeFile(join(state.dir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     await unlink(activePath).catch(() => {});
+    await unlink(join(state.dir, 'stop.request')).catch(() => {});
     onProgress('Transcribing and building the timeline…');
     return { manifest, result: await processImpl(state.dir, { transcribe, sync }) };
   }
