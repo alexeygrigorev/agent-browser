@@ -289,6 +289,10 @@ Chrome restricts debugging of internal pages and some protected tabs. Other debu
 
 `AGENT_BROWSER_PORT` configures the local CLI/service port (default `19333`). The unpacked extension currently connects to port `19333`; changing the service port also requires updating its connection URL and content security policy.
 
+## Desktop control outside the page
+
+Chrome does not let extensions or DevTools automate `chrome://` pages, native file and permission dialogs, or other apps. For those, use the separate [agent-desktop](https://github.com/alexeygrigorev/agent-desktop) CLI, which takes OS-level screenshots and sends real mouse, keyboard and window-focus input. For example, it can reload this unpacked extension on `chrome://extensions` by taking a screenshot, finding the Reload button and clicking it, then running `node bin/cli.js browsers` to confirm the profile reconnected.
+
 ## Development
 
 ```sh
