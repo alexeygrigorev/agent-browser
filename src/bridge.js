@@ -4,12 +4,13 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createBrowserNames } from './browser-names.js';
 import { createRecordings } from './recordings.js';
 import { createFiles } from './files.js';
+import { createTeach } from './teach.js';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
-export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () => {}, names = createBrowserNames(), files = createFiles() } = {}) {
+export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () => {}, names = createBrowserNames(), files = createFiles(), teachOptions = {} } = {}) {
   const browsers = new Map();
   const pending = new Map();
   // SSH reverse forwards may use a different loopback port on the remote host.
@@ -34,6 +35,11 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
   });
   const recordings = createRecordings({ capture: async (browserId, tabId) => {
     const response = await send(select(browserId), 'page.screenshot', { tabId, format: 'jpeg', quality: 75 });
+    if (response.error) throw new Error(typeof response.error === 'string' ? response.error : response.error.message);
+    return response.result;
+  } });
+  const teach = createTeach({ ...teachOptions, send: async (browserId, method, params) => {
+    const response = await send(select(browserId), method, params);
     if (response.error) throw new Error(typeof response.error === 'string' ? response.error : response.error.message);
     return response.result;
   } });
@@ -87,6 +93,10 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
         if (command.browser && record && select(command.browser).id !== record.browserId) return reply(res, 400, { error: 'Recording belongs to a different browser' });
         return reply(res, 200, { result: await recordings.stop(command.params) });
       }
+      // Stopping and post-processing must work even after Chrome went away.
+      if (command.method === 'teach.stop') return reply(res, 200, { result: await teach.stop({ ...command.params, browserId: command.browser }) });
+      if (command.method === 'teach.status') return reply(res, 200, { result: teach.status(command.params) });
+      if (command.method === 'teach.process') return reply(res, 200, { result: await teach.reprocess(command.params) });
       if (command.method === 'recording.list') {
         const result = recordings.list();
         return reply(res, 200, { result: command.browser ? result.filter(r => r.browserId === select(command.browser).id) : result });
@@ -100,6 +110,7 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
         browser.ws.send(JSON.stringify({ type: 'browser', browser: metadata(browser) }));
         return reply(res, 200, { result: metadata(browser) });
       }
+      if (command.method === 'teach.start') return reply(res, 200, { result: await teach.start({ ...command.params, browserId: browser.id }) });
       if (command.method === 'recording.start') return reply(res, 200, { result: await recordings.start({ ...command.params, browserId: browser.id }) });
       if (command.method === 'page.upload') await files.validate(command.params.files);
       reply(res, 200, await send(browser, command.method, command.params));
@@ -141,6 +152,7 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
             ws.send(JSON.stringify({ type: 'ready', browser: metadata(browser) })); return;
           }
           if (message.type === 'ping') { ws.send(JSON.stringify({ type: 'pong' })); return; }
+          if (message.type === 'teach-event') { await teach.ingest(browser.id, message).catch(error => onDiagnostic({ event: 'teach_write_failed', error: error.message })); return; }
           const entry = pending.get(message.id);
           if (entry?.browserId === browser.id) { clearTimeout(entry.timer); pending.delete(message.id); entry.resolve(message); }
         } catch { ws.close(1008, 'Invalid message'); }
@@ -159,7 +171,7 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
     server,
     listen: () => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', () => resolve(server.address())); }),
     async close() {
-      try { await recordings.close(); }
+      try { await Promise.all([recordings.close(), teach.close()]); }
       finally { for (const ws of wss.clients) ws.terminate(); wss.close(); await new Promise(resolve => server.close(resolve)); }
     }
   };

@@ -230,6 +230,40 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `groups.release` | `tabId`; ungroups and detaches a managed tab |
 | `cdp.send` | `tabId`, `method`, `params?`; sends a Chrome DevTools Protocol command |
 
+## Teach recording
+
+Teach recording captures a walkthrough you do yourself in Chrome so an agent can turn it into a written procedure (SOP). While a session runs, the extension logs every click, typed value, form submit, special key, copy, navigation, new tab, new window and tab switch across all tabs and windows of the profile, with screenshots of the visible tab after meaningful actions. The bridge records your microphone on the same clock. On stop, the speech is transcribed locally with faster-whisper and merged with the actions into one timeline.
+
+Start and stop from a terminal on the computer with Chrome:
+
+```sh
+node bin/cli.js teach start --name "N26 transactions for accountant"
+node bin/cli.js teach stop
+```
+
+On Windows, double-click `windows\teach-start.cmd` and `windows\teach-stop.cmd`, or run `powershell -ExecutionPolicy Bypass -File windows\install-teach-shortcuts.ps1` once to put **Teach - Start recording** and **Teach - Stop recording** on the Desktop. No administrator rights are needed.
+
+Each session writes a bundle to `%USERPROFILE%\teach-recordings\<id>\` (`~/teach-recordings/<id>/` elsewhere; set `AGENT_BROWSER_TEACH_DIR` to change it):
+
+| File | Contents |
+|---|---|
+| `timeline.md` | Readable timeline: `say` lines (speech) interleaved with actions, element names, selectors, tabs and screenshot links |
+| `timeline.json` | The same items with full event data; each action has `said`, the speech from 3 s before to 1 s after it |
+| `events.jsonl` | Raw action log: ISO time, `offsetMs` from session start, tab and window IDs, URL, title, element tag, role, accessible name, text, id, name, CSS selector and bounding box |
+| `screenshots/` | JPEG of the visible tab at clicks, submits, Enter, page loads, SPA navigation and tab switches |
+| `audio.wav`, `transcript.json` | Microphone audio (16 kHz mono) and segment-level transcript |
+| `manifest.json` | Session times, counts, microphone device, audio start offset, or why audio is missing |
+
+On Windows, `teach stop` also copies the bundle with `scp` to `hetzner:~/tmp/teach-recordings/<id>/` and prints the path. Choose another destination with `--sync host:dir` or `AGENT_BROWSER_TEACH_SYNC`, or skip it with `--no-sync` (`AGENT_BROWSER_TEACH_SYNC=off`). If transcription or sync fails, the timeline is still written with a note; rerun with `teach process <id>`. `teach status` shows the running session. The bridge owns the session, so `teach start` and `teach stop` also work from a remote agent through `tunnel`; the bundle stays on the computer with Chrome until it syncs.
+
+Requirements on the computer with Chrome: FFmpeg on PATH (or `AGENT_BROWSER_FFMPEG`), and Python with `faster-whisper` (`python -m pip install --user faster-whisper`; set `AGENT_BROWSER_PYTHON` if `python` is not the right interpreter). The first transcription downloads the Whisper model (`AGENT_BROWSER_WHISPER_MODEL`, default `small`). Nothing is sent to a paid service. On Windows the first DirectShow audio device is used; pick another with `--mic "<part of the name>"` or `AGENT_BROWSER_MIC`. If no microphone is available, the session still records actions and `teach start` prints the exact reason, such as Windows blocking desktop apps from the microphone (Settings > Privacy & security > Microphone > "Let desktop apps access your microphone"). `--no-audio` records actions only; `--audio-file <wav>` plays a file in place of the microphone for demos.
+
+Password inputs are recorded as `[password not recorded]`. Everything else you type, including one-time codes, appears in the log, and screenshots show whatever is on screen. Treat bundles as private.
+
+Recording only observes: it uses a content script and `chrome.tabs.captureVisibleTab`, so it does not attach the debugger, show the debugging banner, or move tabs into the agent group. It needs the `scripting`, `webNavigation` and all-sites permissions; after updating, reload the extension once at `chrome://extensions`. Pages Chrome protects, such as `chrome://` pages and the Web Store, are not logged.
+
+`node scripts/teach-demo.js` runs a complete session on a local test page in a disposable Chromium profile on port `19444`, with synthetic narration, including a popup tab. It needs Playwright Chromium and leaves your own Chrome untouched.
+
 ## Trust and limitations
 
 Any local process that can reach the running bridge can control the connected browser. Use it on a trusted computer with trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action. Use **Pause** in the extension to pause browser access: browser calls can restart a stopped bridge automatically.

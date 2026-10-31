@@ -56,6 +56,9 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   mouse down|up <tabId> [<selector>|<x> <y>] [--button <name>]  Press/release (default: last point)
   record start <tabId> [--output <path>]  Start a recording
   record stop <id>         Stop a recording
+  teach start [--name <text>] [--mic <device>] [--no-audio]  Record a walkthrough: actions, screenshots, voice
+  teach stop [--no-sync]   Stop, transcribe, build timeline.md, sync the bundle
+  teach status | teach process <id>  Show the session, or rebuild a bundle
   tunnel <ssh-host> [--remote-port <port>]  Forward this bridge to a remote host
   call <method> [JSON]     Send a browser command (params default to {})
   call <method> --stdin    Read JSON params from standard input
@@ -80,7 +83,7 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
   const port = getPort();
   if (command === 'serve') {
     const bridge = createBridge({ port, onDiagnostic: event => console.error(`[browser-bridge] ${JSON.stringify(event)}`) });
@@ -101,6 +104,7 @@ async function main() {
   }
   const active = command !== 'status';
   const client = createClient({ port, browser, autoStart: active && autoStart, waitForConnection: active });
+  if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach(client, args); return; }
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (command === 'browsers') { console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return; }

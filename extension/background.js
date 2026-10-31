@@ -242,6 +242,7 @@ async function dispatch(method, params = {}) {
     if (params.state !== undefined && !['in_progress', 'complete', 'interrupted'].includes(params.state)) throw new Error('Unknown download state');
     return (await chrome.downloads.search({ limit, orderBy: ['-startTime'], ...(params.state === undefined ? {} : { state: params.state }) })).map(downloadMetadata);
   }
+  if (method.startsWith('teach.')) return teachDispatch(method, params);
   if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId, openerTabId }) => ({ id, windowId, title, url, active, status, groupId, ...(openerTabId === undefined ? {} : { openerTabId }), managed: [...managedGroups.values()].some(group => group.id === groupId) }));
   if (method === 'tabs.create') {
     const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: params.active ?? true });
@@ -343,6 +344,7 @@ function connect() {
       status = 'Connected — browser control enabled';
       browser = { ...browser, ...message.browser, connected: true };
       renameManagedGroups().catch(() => {});
+      if (typeof teachFlush === 'function') teachFlush();
       return;
     }
     if (message.type === 'browser') {
@@ -424,7 +426,7 @@ chrome.alarms.onAlarm.addListener(async ({ name }) => {
   if (name === 'reconnect' && enabled && !socket) connect();
 });
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (sender.id !== chrome.runtime.id) return;
+  if (sender.id !== chrome.runtime.id || message?.type === 'teach-event') return;
   (async () => {
     await startup;
     if (message.type === 'disconnect') await disconnect();
@@ -439,3 +441,5 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   })().catch(error => reply({ enabled, status: error.message, browser }));
   return true;
 });
+// Teach recording lives in its own file; the unit tests load this file alone.
+if (typeof importScripts === 'function') importScripts('teach.js');
