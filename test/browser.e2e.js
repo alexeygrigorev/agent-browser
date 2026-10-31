@@ -99,7 +99,11 @@ const fixture = http.createServer(async (req, res) => {
     <form id="upload-form" onsubmit="event.preventDefault();fetch('/upload',{method:'POST',body:new FormData(this)}).then(r=>r.text()).then(t=>document.querySelector('#upload-result').textContent=t)">
     <input id="file" name="file" type="file"><button id="upload-submit">Upload fixture</button></form><p id="upload-result">No upload</p>
     <script>window.__uploadEvents={input:0,change:0};for(const type of ['input','change'])document.querySelector('#file').addEventListener(type,()=>window.__uploadEvents[type]++)</script>
-    <p id="result">Waiting</p>`);
+    <p id="result">Waiting</p>
+    <style>#menu-item{display:none}#menu:hover #menu-item{display:block}</style>
+    <div id="menu" style="position:fixed;left:700px;top:20px;width:160px;height:60px;background:#ccc" onmouseenter="this.dataset.entered=event.isTrusted">Menu<div id="menu-item">Item</div></div>
+    <div id="pad" style="position:fixed;left:700px;top:120px;width:300px;height:200px;background:#eee"></div>
+    <script>window.__mouse=[];for(const type of ['mousedown','mouseup','click','dblclick'])document.querySelector('#pad').addEventListener(type,e=>__mouse.push([type,e.button,e.isTrusted,e.clientX,e.clientY]))</script>`);
 });
 let context;
 let context2;
@@ -196,6 +200,34 @@ try {
   const screenshotPath = join(profile, 'main-screenshot.png');
   assert.equal((await cli(['screenshot', String(tabId), '--output', screenshotPath])).format, 'png');
   assert.equal((await readFile(screenshotPath)).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  const nestedScreenshot = join(profile, 'missing', 'folders', 'shot.png');
+  await cli(['screenshot', String(tabId), '--output', nestedScreenshot]);
+  assert.equal((await readFile(nestedScreenshot)).subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'screenshot creates missing parent folders');
+
+  // Coordinate and hover input are trusted CDP mouse events, so CSS :hover and isTrusted listeners react.
+  const pageValue = expression => client.call('page.evaluate', { tabId, expression });
+  assert.equal(await pageValue('getComputedStyle(document.querySelector("#menu-item")).display'), 'none');
+  assert.deepEqual(await cli(['hover', String(tabId), '780', '40']), { hovered: true, x: 780, y: 40 });
+  assert.equal(await pageValue('getComputedStyle(document.querySelector("#menu-item")).display'), 'block', 'hover opens a CSS :hover menu');
+  assert.equal(await pageValue('document.querySelector("#menu").dataset.entered'), 'true', 'hover produces a trusted mouseenter');
+  await cli(['hover', String(tabId), '100', '700']);
+  assert.equal(await pageValue('getComputedStyle(document.querySelector("#menu-item")).display'), 'none');
+  await cli(['hover', String(tabId), '#menu']);
+  assert.equal(await pageValue('getComputedStyle(document.querySelector("#menu-item")).display'), 'block', 'selector hover targets the element center');
+  await cli(['click', String(tabId), '750', '150']);
+  await cli(['click', String(tabId), '760', '160', '--button', 'right']);
+  await cli(['click', String(tabId), '770', '170', '--count', '2']);
+  await cli(['mouse', 'move', String(tabId), '800', '200']);
+  await cli(['mouse', 'down', String(tabId)]);
+  await cli(['mouse', 'move', String(tabId), '900', '250']);
+  await cli(['mouse', 'up', String(tabId)]);
+  assert.deepEqual(await pageValue('__mouse'), [
+    ['mousedown', 0, true, 750, 150], ['mouseup', 0, true, 750, 150], ['click', 0, true, 750, 150],
+    ['mousedown', 2, true, 760, 160], ['mouseup', 2, true, 760, 160],
+    ['mousedown', 0, true, 770, 170], ['mouseup', 0, true, 770, 170], ['click', 0, true, 770, 170],
+    ['mousedown', 0, true, 770, 170], ['mouseup', 0, true, 770, 170], ['click', 0, true, 770, 170], ['dblclick', 0, true, 770, 170],
+    ['mousedown', 0, true, 800, 200], ['mouseup', 0, true, 900, 250], ['click', 0, true, 900, 250]
+  ], 'a drag within one element still ends in a click, as in a real browser');
   const cliSnapshot = await cli(['call', 'page.snapshot', '--stdin'], JSON.stringify({ tabId }));
   assert.equal(cliSnapshot.title, 'Agent Browser E2E', 'CLI stdin reaches the real extension');
   mcp = new Client({ name: 'browser-e2e', version: '1.0.0' });
@@ -203,7 +235,7 @@ try {
     command: process.execPath, args: [resolve('bin/cli.js'), 'mcp'], env: childEnv, stderr: 'pipe',
   }));
   const definitions = await mcp.listTools();
-  for (const name of ['tabs_list', 'page_snapshot', 'page_type', 'page_click', 'page_evaluate', 'page_screenshot']) {
+  for (const name of ['tabs_list', 'page_snapshot', 'page_type', 'page_click', 'page_hover', 'page_mouse', 'page_evaluate', 'page_screenshot']) {
     assert.ok(definitions.tools.some(tool => tool.name === name), `MCP advertises ${name}`);
   }
   async function tool(name, args = {}) {
@@ -222,6 +254,12 @@ try {
   await textTool('page_type', { tabId, selector: '#name', text: 'MCP Agent café "quoted"' });
   await textTool('page_click', { tabId, selector: '#submit' });
   assert.equal(await textTool('page_evaluate', { tabId, expression: 'document.querySelector("#result").textContent' }), 'Hello MCP Agent café "quoted"');
+  await textTool('page_hover', { tabId, x: 100, y: 700 });
+  assert.deepEqual(await textTool('page_hover', { tabId, selector: '#menu' }), { hovered: true, x: 780, y: 50 });
+  assert.equal(await textTool('page_evaluate', { tabId, expression: 'getComputedStyle(document.querySelector("#menu-item")).display' }), 'block');
+  await textTool('page_mouse', { tabId, action: 'down', x: 710, y: 130 });
+  await textTool('page_mouse', { tabId, action: 'up' });
+  assert.deepEqual((await textTool('page_evaluate', { tabId, expression: '__mouse' })).slice(-3), [['mousedown', 0, true, 710, 130], ['mouseup', 0, true, 710, 130], ['click', 0, true, 710, 130]]);
   const mcpScreenshot = (await tool('page_screenshot', { tabId }))[0];
   assert.equal(mcpScreenshot.type, 'image');
   assert.equal(mcpScreenshot.mimeType, 'image/png');

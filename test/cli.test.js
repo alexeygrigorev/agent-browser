@@ -123,6 +123,41 @@ test('CLI screenshot creates missing parent folders for relative and absolute ou
   assert.deepEqual(await readFile(absolute), png);
 });
 
+test('CLI click, hover and mouse commands send coordinate and selector input params', async t => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/status')) return res.end(JSON.stringify({ connected: true }));
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    requests.push(JSON.parse(body));
+    res.end(JSON.stringify({ result: { ok: true } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const env = { AGENT_BROWSER_PORT: String(server.address().port), AGENT_BROWSER_NAME: undefined };
+  const commands = [
+    [['--browser', 'orin', 'click', '7', '120.5', '64'], { method: 'page.click', params: { tabId: 7, x: 120.5, y: 64 }, browser: 'orin' }],
+    [['click', '7', 'button.menu', '--button', 'right', '--count', '2'], { method: 'page.click', params: { tabId: 7, button: 'right', clickCount: 2, selector: 'button.menu' } }],
+    [['hover', '7', '300', '40'], { method: 'page.hover', params: { tabId: 7, x: 300, y: 40 } }],
+    [['hover', '7', '#side [aria-label="Open"]'], { method: 'page.hover', params: { tabId: 7, selector: '#side [aria-label="Open"]' } }],
+    [['mouse', 'move', '7', '10', '20'], { method: 'page.mouse', params: { tabId: 7, action: 'move', x: 10, y: 20 } }],
+    [['mouse', 'down', '7', '--button', 'middle'], { method: 'page.mouse', params: { tabId: 7, action: 'down', button: 'middle' } }],
+    [['mouse', 'up', '7', '50', '60'], { method: 'page.mouse', params: { tabId: 7, action: 'up', x: 50, y: 60 } }]
+  ];
+  for (const [args] of commands) {
+    const result = await run(args, '', env);
+    assert.equal(result.code, 0, result.stderr);
+  }
+  assert.deepEqual(requests, commands.map(([, request]) => request));
+  for (const args of [['click', '7'], ['click', 'tab', '1', '2'], ['hover', '7', '1', '2', '--button', 'left'], ['mouse', 'move', '7'], ['mouse', 'drag', '7', '1', '2'], ['click', '7', '1', '2', '--count', '0'], ['mouse', 'move', '7', '1', '2', '--button', 'left']]) {
+    const result = await run(['--no-autostart', ...args], '', env);
+    assert.equal(result.code, 1, args.join(' '));
+    assert.match(result.stderr, /^Usage: (click|hover|mouse)/);
+  }
+  assert.equal(requests.length, commands.length);
+});
+
 test('CLI download commands preserve filenames and return desktop metadata', async t => {
   const requests = [];
   const server = http.createServer(async (req, res) => {

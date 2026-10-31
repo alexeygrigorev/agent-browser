@@ -43,7 +43,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
         if (method === 'Page.getLayoutMetrics') return { cssContentSize: { x: 0, y: 0, width: 1200, height: 4000 } };
         if (method === 'Runtime.evaluate') {
           const value = params.expression.includes('function snapshot') ? { title: 'Page', text: 'Signed in', elements: [] }
-            : params.expression.includes('"action":"click"') ? { x: 25, y: 40 } : 'evaluated';
+            : /"action":"(click|point)"/.test(params.expression) ? { x: 25, y: 40 } : 'evaluated';
           return { result: { value } };
         }
         return { data: 'image' };
@@ -184,15 +184,50 @@ test('snapshot, selector click and typing dispatch the expected browser operatio
   assert.equal((await command('page.snapshot', { tabId: 7 })).result.text, 'Signed in');
   assert.equal((await command('page.click', { tabId: 7, selector: '#submit' })).result.clicked, true);
   const mouseEvents = calls.filter(([method]) => method === 'Input.dispatchMouseEvent');
-  assert.equal(mouseEvents.length, 2);
-  assert.equal(mouseEvents[0][2].type, 'mousePressed');
-  assert.equal(mouseEvents[1][2].type, 'mouseReleased');
-  assert.equal(mouseEvents[0][2].x, 25);
-  assert.equal(mouseEvents[0][2].y, 40);
+  assert.deepEqual(mouseEvents.map(([, , params]) => params.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+  assert.equal(mouseEvents[1][2].x, 25);
+  assert.equal(mouseEvents[1][2].y, 40);
   assert.equal((await command('page.type', { tabId: 7, selector: '#name', text: 'Hello "world"' })).result.typed, true);
   const insert = calls.find(([method]) => method === 'Input.insertText');
   assert.equal(insert[2].text, 'Hello "world"');
   assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"selector":"#name"')));
+});
+
+test('coordinate click, hover and mouse move/down/up dispatch real CDP input events', async () => {
+  const { calls, command } = await setup();
+  const mouseEvents = () => calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, , params]) => JSON.parse(JSON.stringify(params)));
+  assert.deepEqual((await command('page.click', { tabId: 7, x: 120.5, y: 64, button: 'right' })).result, { clicked: true, x: 120.5, y: 64 });
+  assert.deepEqual(mouseEvents(), [
+    { type: 'mouseMoved', x: 120.5, y: 64, buttons: 0, button: 'none' },
+    { type: 'mousePressed', x: 120.5, y: 64, buttons: 2, button: 'right', clickCount: 1 },
+    { type: 'mouseReleased', x: 120.5, y: 64, buttons: 0, button: 'right', clickCount: 1 }
+  ]);
+  calls.length = 0;
+  assert.deepEqual((await command('page.click', { tabId: 7, x: 5, y: 6, clickCount: 2 })).result.clicked, true);
+  assert.deepEqual(mouseEvents().map(event => event.clickCount), [undefined, 1, 1, 2, 2]);
+  calls.length = 0;
+  assert.deepEqual((await command('page.hover', { tabId: 7, x: 300, y: 40 })).result, { hovered: true, x: 300, y: 40 });
+  assert.deepEqual((await command('page.hover', { tabId: 7, selector: '#menu' })).result, { hovered: true, x: 25, y: 40 });
+  assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"action":"point"')));
+  assert.deepEqual(mouseEvents().map(({ type, x, y }) => [type, x, y]), [['mouseMoved', 300, 40], ['mouseMoved', 25, 40]]);
+  calls.length = 0;
+  await command('page.mouse', { tabId: 7, action: 'move', x: 10, y: 20 });
+  assert.deepEqual((await command('page.mouse', { tabId: 7, action: 'down' })).result, { action: 'down', x: 10, y: 20 });
+  await command('page.mouse', { tabId: 7, action: 'move', x: 50, y: 60 });
+  await command('page.mouse', { tabId: 7, action: 'up', button: 'left' });
+  assert.deepEqual(mouseEvents(), [
+    { type: 'mouseMoved', x: 10, y: 20, buttons: 0, button: 'none' },
+    { type: 'mousePressed', x: 10, y: 20, buttons: 1, button: 'left', clickCount: 1 },
+    { type: 'mouseMoved', x: 50, y: 60, buttons: 1, button: 'left' },
+    { type: 'mouseReleased', x: 50, y: 60, buttons: 0, button: 'left', clickCount: 1 }
+  ]);
+  assert.ok(!calls.some(([method, , params]) => method === 'Runtime.evaluate' && /dispatchEvent|\.click\(/.test(params.expression)));
+  assert.match((await command('page.mouse', { tabId: 7, action: 'drag', x: 1, y: 1 })).error, /move, down, or up/);
+  assert.match((await command('page.mouse', { tabId: 7, action: 'move' })).error, /selector or x and y/);
+  assert.match((await command('page.mouse', { tabId: 8, action: 'down' })).error, /selector or x and y/);
+  assert.match((await command('page.click', { tabId: 7, x: 1, y: 1, button: 'side' })).error, /button must be/);
+  assert.match((await command('page.hover', { tabId: 7 })).error, /selector or x and y/);
+  assert.match((await command('page.click', { tabId: 7, x: 1, y: 1, clickCount: 4 })).error, /clickCount must be 1, 2, or 3/);
 });
 
 test('disconnect cancels queued work and the remaining steps of an in-flight click', async () => {

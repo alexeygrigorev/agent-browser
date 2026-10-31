@@ -89,6 +89,24 @@ Use the download ID returned by `download`. Metadata reports the state and absol
 
 `downloads save` copies a completed Chrome download to a new file on the agent's computer, including through the SSH tunnel. It does not overwrite existing output files. MCP `downloads_save` provides the same transfer. The Chrome metadata's absolute desktop filename and the agent's chosen output path belong to different computers when used remotely.
 
+## Mouse input
+
+Popup menus, hover cards, and side panels often react only to real pointer events. `click`, `hover`, and `mouse` send Chrome DevTools `Input.dispatchMouseEvent` input, not `element.click()` from page JavaScript. Coordinates are viewport CSS pixels, the same space as `getBoundingClientRect()` and screenshot pixels at 100% zoom. A selector is scrolled into view and targeted at its center.
+
+```sh
+node bin/cli.js --browser main click 123 640 360
+node bin/cli.js --browser main click 123 'button[aria-label="More"]' --button right
+node bin/cli.js --browser main click 123 640 360 --count 2
+node bin/cli.js --browser main hover 123 'nav .account'
+node bin/cli.js --browser main hover 123 1180 90
+node bin/cli.js --browser main mouse move 123 200 300
+node bin/cli.js --browser main mouse down 123
+node bin/cli.js --browser main mouse move 123 400 300
+node bin/cli.js --browser main mouse up 123
+```
+
+Every click moves the pointer to the target first, so hover state is in place before the press. `mouse down` and `mouse up` default to the last pointer position in that tab and accept `--button left|right|middle`; moves while a button is held report it as a drag. The generic and MCP forms are `page.click`, `page.hover`, and `page.mouse`. After pulling these commands, reload the unpacked extension once in `chrome://extensions` so the browser side knows `page.hover` and `page.mouse`.
+
 ## Screenshots and video
 
 Get a tab ID from `tabs.list`, then save a screenshot directly to a new file:
@@ -194,7 +212,9 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `tabs.navigate` | `tabId`, `url` |
 | `dialogs.handle` | `tabId`, `accept`, `promptText?`; handles a JavaScript dialog immediately, even while another page action is waiting |
 | `page.snapshot` | `tabId`, `maxLength?`; returns page text and interactive element selectors |
-| `page.click` | `tabId`, `selector`, or `tabId`, `x`, `y` |
+| `page.click` | `tabId`, `selector` or `x`, `y` (viewport CSS px), `button?` (`left`, `right`, `middle`, `back`, `forward`), `clickCount?` (1-3; 2 is a double click); moves, presses, and releases real mouse input |
+| `page.hover` | `tabId`, `selector` or `x`, `y`; moves the real mouse pointer there |
+| `page.mouse` | `tabId`, `action` (`move`, `down`, `up`), `selector` or `x`, `y` (optional for `down`/`up`: last pointer position), `button?`, `clickCount?` |
 | `page.type` | `tabId`, `text`, `selector?`, `clear?` (defaults to true) |
 | `page.key` | `tabId`, `key`, `code?`, `modifiers?` (numeric CDP bitmask) |
 | `page.scroll` | `tabId`, `x?`, `y?` (defaults to 600) |

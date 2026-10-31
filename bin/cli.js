@@ -4,6 +4,39 @@ import { createClient, getPort } from '../src/client.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
+const pointerUsage = {
+  click: 'Usage: click <tabId> <selector>|<x> <y> [--button left|right|middle] [--count <n>]',
+  hover: 'Usage: hover <tabId> <selector>|<x> <y>',
+  mouse: 'Usage: mouse move <tabId> <selector>|<x> <y> | mouse down|up <tabId> [<selector>|<x> <y>] [--button left|right|middle]'
+};
+
+// Parses `<tabId> <selector>|<x> <y>` plus pointer flags into page.* params.
+// A CSS selector cannot be two plain numbers, so two numeric arguments are coordinates.
+function pointerParams(command, args) {
+  const usage = pointerUsage[command];
+  const rest = [...args];
+  const params = {};
+  if (command === 'mouse') {
+    params.action = rest.shift();
+    if (!['move', 'down', 'up'].includes(params.action)) throw new Error(usage);
+  }
+  const positional = [];
+  while (rest.length) {
+    const arg = rest.shift();
+    if (arg === '--button' && (command === 'click' || ['down', 'up'].includes(params.action)) && rest.length) params.button = rest.shift();
+    else if (arg === '--count' && command === 'click' && /^[1-9][0-9]*$/.test(rest[0] || '')) params.clickCount = Number(rest.shift());
+    else if (arg.startsWith('--')) throw new Error(usage);
+    else positional.push(arg);
+  }
+  const [tab, ...target] = positional;
+  if (!/^[0-9]+$/.test(tab || '')) throw new Error(usage);
+  const number = /^-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)$/;
+  if (target.length === 2 && target.every(value => number.test(value))) { params.x = Number(target[0]); params.y = Number(target[1]); }
+  else if (target.length === 1 && target[0].trim()) params.selector = target[0];
+  else if (!(target.length === 0 && params.action && params.action !== 'move')) throw new Error(usage);
+  return { tabId: Number(tab), ...params };
+}
+
 const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
 
   serve                    Start the local bridge; the extension connects automatically
@@ -16,6 +49,11 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   downloads save <id> --output <path>  Copy a completed download to this computer
   download <URL> [--filename <relative>]  Start a browser download
   screenshot <tabId> --output <path>  Save a PNG screenshot (new file; creates parent folders)
+  click <tabId> <selector>|<x> <y> [--button left|right|middle] [--count <n>]
+                           Click an element or viewport CSS pixel with real mouse input
+  hover <tabId> <selector>|<x> <y>  Move the mouse over an element or viewport point
+  mouse move <tabId> <selector>|<x> <y>  Move the mouse (held buttons drag)
+  mouse down|up <tabId> [<selector>|<x> <y>] [--button <name>]  Press/release (default: last point)
   record start <tabId> [--output <path>]  Start a recording
   record stop <id>         Stop a recording
   tunnel <ssh-host> [--remote-port <port>]  Forward this bridge to a remote host
@@ -42,7 +80,7 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
   const port = getPort();
   if (command === 'serve') {
     const bridge = createBridge({ port, onDiagnostic: event => console.error(`[browser-bridge] ${JSON.stringify(event)}`) });
@@ -97,6 +135,11 @@ async function main() {
     if (!data) throw new Error('Browser returned no screenshot data');
     await writeFile(path, Buffer.from(data, 'base64'), { flag: 'wx' });
     console.log(JSON.stringify({ path, format }));
+    return;
+  }
+  if (['click', 'hover', 'mouse'].includes(command)) {
+    const params = pointerParams(command, args);
+    console.log(JSON.stringify(await client.call(command === 'mouse' ? 'page.mouse' : `page.${command}`, params), null, 2));
     return;
   }
   if (command === 'record') {

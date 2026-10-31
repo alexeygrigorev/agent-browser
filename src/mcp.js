@@ -5,6 +5,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 const object = properties => ({ type: 'object', properties });
 const tabId = { type: 'integer', description: 'Chrome tab ID from tabs_list' };
 const string = description => ({ type: 'string', description });
+const button = { type: 'string', enum: ['left', 'right', 'middle', 'back', 'forward'], default: 'left' };
 const definitions = [
   ['page.upload', 'Upload files from the MCP machine into a page file input', object({ tabId, selector: string('File input CSS selector'), files: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'Paths on the MCP client machine' } })],
   ['downloads.start', 'Download a URL in Chrome using its signed-in session', object({ url: string('HTTP, HTTPS or data URL'), filename: string('Relative download filename') })],
@@ -27,7 +28,9 @@ const definitions = [
   ['tabs.navigate', 'Navigate an existing tab', object({ tabId, url: string('Destination URL') })],
   ['dialogs.handle', 'Accept or dismiss a JavaScript dialog without waiting for the page-action queue', object({ tabId, accept: { type: 'boolean', description: 'Accept the dialog when true, dismiss it when false' }, promptText: string('Optional text for a JavaScript prompt') })],
   ['page.snapshot', 'Read page text and interactive elements', object({ tabId, maxLength: { type: 'integer' } })],
-  ['page.click', 'Click an element by CSS selector or viewport coordinates', object({ tabId, selector: string('CSS selector'), x: { type: 'number' }, y: { type: 'number' } })],
+  ['page.click', 'Click an element by CSS selector or viewport CSS-pixel coordinates with real mouse input', object({ tabId, selector: string('CSS selector'), x: { type: 'number' }, y: { type: 'number' }, button, clickCount: { type: 'integer', minimum: 1, maximum: 3, description: 'Use 2 for a double click' } })],
+  ['page.hover', 'Move the real mouse pointer over an element or viewport CSS-pixel point, e.g. to open hover menus', object({ tabId, selector: string('CSS selector'), x: { type: 'number' }, y: { type: 'number' } })],
+  ['page.mouse', 'Send one real mouse move, button press, or release; down/up default to the last pointer position', object({ tabId, action: { type: 'string', enum: ['move', 'down', 'up'] }, selector: string('CSS selector'), x: { type: 'number' }, y: { type: 'number' }, button, clickCount: { type: 'integer', minimum: 1 } })],
   ['page.type', 'Enter text into an element or current focus', object({ tabId, selector: string('CSS selector'), text: string('Text to enter'), clear: { type: 'boolean', default: true } })],
   ['page.key', 'Press a keyboard key', object({ tabId, key: string('Key name, e.g. Enter'), code: string('Physical key code'), modifiers: { type: 'integer', description: 'CDP modifier bits: Alt=1, Control=2, Meta=4, Shift=8' } })],
   ['page.scroll', 'Scroll the page', object({ tabId, x: { type: 'number' }, y: { type: 'number' } })],
@@ -51,7 +54,8 @@ for (const [method, , schema] of definitions) {
   if (method === 'page.evaluate') required.push('expression');
   if (method === 'cdp.send') required.push('method');
   schema.required = required;
-  if (method === 'page.click') schema.anyOf = [{ required: ['selector'] }, { required: ['x', 'y'] }];
+  if (method === 'page.mouse') required.push('action');
+  if (['page.click', 'page.hover'].includes(method)) schema.anyOf = [{ required: ['selector'] }, { required: ['x', 'y'] }];
 }
 
 export async function startMcp(client) {

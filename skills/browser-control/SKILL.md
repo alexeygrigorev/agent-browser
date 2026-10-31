@@ -33,6 +33,20 @@ PowerShell-safe JSON:
 '{"tabId":123,"selector":"#submit"}' | node .\bin\cli.js --browser main call page.click --stdin
 ```
 
+Menus, hover cards, and side panels that ignore scripted clicks need real mouse input. Use these instead of `page.evaluate` clicks; coordinates are viewport CSS pixels (as in `getBoundingClientRect()`):
+
+```sh
+node bin/cli.js --browser main click 123 640 360
+node bin/cli.js --browser main click 123 'button[aria-label="More"]' --button right
+node bin/cli.js --browser main hover 123 'nav .account'
+node bin/cli.js --browser main mouse move 123 200 300
+node bin/cli.js --browser main mouse down 123
+node bin/cli.js --browser main mouse move 123 400 300
+node bin/cli.js --browser main mouse up 123
+```
+
+`click` also takes `--count 2`. `mouse down|up` default to the last pointer point and take `--button`. Generic/MCP forms: `page.click`, `page.hover`, `page.mouse` (`action` move/down/up). If they report `Unknown method`, the extension needs one reload in `chrome://extensions`.
+
 For non-ASCII JSON on PowerShell 5.1, use a UTF-8 file with `--params-file params.json` or set `$OutputEncoding` to UTF-8. The repository README's Browser commands table covers navigation, keys, scrolling, evaluation, and CDP parameters.
 
 ## Screenshots and video

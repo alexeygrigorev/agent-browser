@@ -181,6 +181,10 @@ function targetAction({ selector, action, text, clear = true }) {
   const element = document.querySelector(selector);
   if (!element) throw new Error(`No element matches ${selector}`);
   element.scrollIntoView({ block: 'center', inline: 'center' });
+  if (action === 'point') {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  }
   element.focus();
   if (action === 'click') {
     const rect = element.getBoundingClientRect();
@@ -196,6 +200,28 @@ function targetAction({ selector, action, text, clear = true }) {
     element.dispatchEvent(new Event('input', { bubbles: true }));
   }
   return true;
+}
+
+// Pointer position and held buttons per tab, so hover menus and drags see one
+// continuous mouse rather than isolated events.
+const pointers = new Map();
+const mouseButtons = { left: 1, right: 2, middle: 4, back: 8, forward: 16 };
+async function point(tabId, params, action = 'point') {
+  const target = params.selector ? await pageCall(tabId, targetAction, { selector: params.selector, action }) : params;
+  if (!Number.isFinite(target.x) || !Number.isFinite(target.y)) throw new Error('Provide selector or x and y coordinates');
+  return { x: target.x, y: target.y };
+}
+async function mouse(tabId, type, { x, y }, { button = 'left', clickCount = 1 } = {}) {
+  if (type !== 'mouseMoved' && !Object.hasOwn(mouseButtons, button)) throw new Error('button must be left, right, middle, back, or forward');
+  if (!Number.isInteger(clickCount) || clickCount < 1) throw new Error('clickCount must be a positive integer');
+  const state = pointers.get(tabId) || { buttons: 0 };
+  let buttons = state.buttons;
+  if (type === 'mousePressed') buttons |= mouseButtons[button];
+  if (type === 'mouseReleased') buttons &= ~mouseButtons[button];
+  const held = Object.keys(mouseButtons).find(name => buttons & mouseButtons[name]);
+  await cdp(tabId, 'Input.dispatchMouseEvent', { type, x, y, buttons, ...(type === 'mouseMoved' ? { button: held || 'none' } : { button, clickCount }) });
+  pointers.set(tabId, { x, y, buttons });
+  return { x, y };
 }
 
 async function dispatch(method, params = {}) {
@@ -229,7 +255,7 @@ async function dispatch(method, params = {}) {
     if (params.promptText !== undefined && typeof params.promptText !== 'string') throw new Error('promptText must be a string');
     return cdp(tabId, 'Page.handleJavaScriptDialog', { accept: params.accept, ...(params.promptText === undefined ? {} : { promptText: params.promptText }) });
   }
-  if (method === 'tabs.close') { await chrome.tabs.remove(tabId); return { closed: true }; }
+  if (method === 'tabs.close') { await chrome.tabs.remove(tabId); pointers.delete(tabId); return { closed: true }; }
   if (method === 'groups.manage') return manageTab(tabId, params);
   if (method === 'groups.release') {
     const tab = await chrome.tabs.get(tabId);
@@ -250,11 +276,24 @@ async function dispatch(method, params = {}) {
     return evaluate(tabId, params.expression);
   }
   if (method === 'page.click') {
-    const point = params.selector ? await pageCall(tabId, targetAction, { ...params, action: 'click' }) : params;
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('Provide selector or x and y coordinates');
-    await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
-    await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
-    return { clicked: true };
+    const target = await point(tabId, params, 'click');
+    const clickCount = params.clickCount ?? 1;
+    if (!Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3) throw new Error('clickCount must be 1, 2, or 3');
+    await mouse(tabId, 'mouseMoved', target);
+    // A real double click is two press/release pairs with an increasing count.
+    for (let count = 1; count <= clickCount; count++) {
+      await mouse(tabId, 'mousePressed', target, { ...params, clickCount: count });
+      await mouse(tabId, 'mouseReleased', target, { ...params, clickCount: count });
+    }
+    return { clicked: true, ...target };
+  }
+  if (method === 'page.hover') return { hovered: true, ...await mouse(tabId, 'mouseMoved', await point(tabId, params)) };
+  if (method === 'page.mouse') {
+    const types = { move: 'mouseMoved', down: 'mousePressed', up: 'mouseReleased' };
+    if (!Object.hasOwn(types, params.action)) throw new Error('action must be move, down, or up');
+    const last = pointers.get(tabId);
+    const target = params.selector || params.x !== undefined || params.y !== undefined || params.action === 'move' || !last ? await point(tabId, params) : last;
+    return { action: params.action, ...await mouse(tabId, types[params.action], target, params) };
   }
   if (method === 'page.type') {
     if (typeof params.text !== 'string') throw new Error('text must be a string');
