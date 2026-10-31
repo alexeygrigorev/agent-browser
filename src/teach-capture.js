@@ -66,14 +66,24 @@ export async function microphoneInput({ mic = process.env.AGENT_BROWSER_MIC, pla
   return { device: mic || 'default', args: ['-f', 'pulse', '-i', mic || 'default'] };
 }
 
-// Records the microphone (or, for demos and tests, a file played in real time)
-// to 16 kHz mono WAV. FFmpeg's progress output tells when the first sample was
-// captured, so the audio start can be placed on the session clock. Audio can
-// never start before FFmpeg itself; that bound matters for -re file input,
-// whose reported time runs ahead of the wall clock.
-export function startAudioCapture({ input, output, now = Date.now, spawnImpl = spawn, readyTimeout = 8000 }) {
+// Screen video for the whole desktop at a low frame rate; screenshots for
+// actions are cut from it afterwards.
+export function screenInput({ platform = process.platform, display = process.env.DISPLAY, fps = 3 } = {}) {
+  if (platform === 'win32') return { device: 'desktop (gdigrab)', args: ['-f', 'gdigrab', '-framerate', String(fps), '-draw_mouse', '1', '-i', 'desktop'] };
+  if (platform === 'linux' && display) return { device: `X11 ${display}`, args: ['-f', 'x11grab', '-framerate', String(fps), '-draw_mouse', '1', '-i', display] };
+  return { error: platform === 'linux' ? 'No X11 display (DISPLAY is not set)' : `Screen recording is not supported on ${platform}` };
+}
+export const audioOutput = ['-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le'];
+export const videoOutput = ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '32', '-pix_fmt', 'yuv420p', '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2'];
+
+// Runs one FFmpeg capture (microphone, a file played in real time, or the
+// screen). FFmpeg's progress output tells when the first sample was captured,
+// so the start can be placed on the session clock. A capture can never start
+// before FFmpeg itself; that bound matters for -re file input, whose reported
+// time runs ahead of the wall clock.
+export function startCapture({ input, output, outputArgs = audioOutput, now = Date.now, spawnImpl = spawn, readyTimeout = 8000 }) {
   const spawnedAt = now();
-  const child = spawnImpl(ffmpegPath(), ['-hide_banner', '-loglevel', 'error', ...input, '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le',
+  const child = spawnImpl(ffmpegPath(), ['-hide_banner', '-loglevel', 'error', ...input, ...outputArgs,
     '-progress', 'pipe:1', '-stats_period', '0.5', '-n', output], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const state = { child, startedAt: null, stderr: '', exited: false, code: null, samples: 0 };
   let buffered = '';

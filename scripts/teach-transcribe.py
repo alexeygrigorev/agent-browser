@@ -7,6 +7,20 @@ AGENT_BROWSER_WHISPER_LANGUAGE (default: detect).
 import json
 import os
 import sys
+import wave
+
+
+def load(path):
+    """Teach audio is 16 kHz mono 16-bit WAV: decode it here so faster-whisper
+    does not need PyAV, whose newer releases break its file decoding."""
+    try:
+        import numpy
+        with wave.open(path, "rb") as handle:
+            if handle.getframerate() == 16000 and handle.getnchannels() == 1 and handle.getsampwidth() == 2 and handle.getnframes():
+                return numpy.frombuffer(handle.readframes(handle.getnframes()), dtype=numpy.int16).astype(numpy.float32) / 32768.0
+    except (wave.Error, EOFError, ImportError):
+        pass
+    return path
 
 
 def main():
@@ -19,7 +33,7 @@ def main():
     model_name = os.environ.get("AGENT_BROWSER_WHISPER_MODEL", "small")
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, info = model.transcribe(
-        audio,
+        load(audio),
         language=os.environ.get("AGENT_BROWSER_WHISPER_LANGUAGE") or None,
         vad_filter=True,
         beam_size=5,

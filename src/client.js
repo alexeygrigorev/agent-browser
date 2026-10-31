@@ -127,7 +127,7 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
       if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('Params must be a JSON object');
       const selectedBrowser = options.browser ?? browser;
       if (selectedBrowser !== undefined && (typeof selectedBrowser !== 'string' || !selectedBrowser.trim())) throw new Error('Browser must be a non-empty nickname or ID');
-      await ensureReady(selectedBrowser, ['browsers.list', 'recording.list', 'recording.stop', 'teach.stop', 'teach.status', 'teach.process'].includes(method));
+      await ensureReady(selectedBrowser, ['browsers.list', 'recording.list', 'recording.stop', 'teach.stop', 'teach.status'].includes(method));
       const payload = await request('/command', { method, params, ...(selectedBrowser === undefined ? {} : { browser: selectedBrowser }) });
       return Object.hasOwn(payload, 'result') ? payload.result : payload;
     }

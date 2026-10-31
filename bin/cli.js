@@ -58,7 +58,8 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   mouse down|up <tabId> [<selector>|<x> <y>] [--button <name>]  Press/release (default: last point)
   record start <tabId> [--output <path>]  Start a recording
   record stop <id>         Stop a recording
-  teach start [--name <text>] [--mic <device>] [--no-audio]  Record a walkthrough: actions, screenshots, voice
+  teach start [--name <text>] [--no-audio] [--no-browser]  Record a desktop walkthrough: screen, voice,
+                           mouse, keyboard, windows, plus Chrome details
   teach stop [--no-sync]   Stop, transcribe, build timeline.md, sync the bundle
   teach status | teach process <id>  Show the session, or rebuild a bundle
   tunnel <ssh-host> [--remote-port <port>]  Forward this bridge to a remote host
@@ -113,9 +114,9 @@ ${help}`);
     await startTunnel(args[0], { port, remotePort: args[2] ? getPort(args[2]) : port, ensureBridge: autoStart });
     return;
   }
+  if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach({ port, browser, autoStart }, args); return; }
   const active = command !== 'status';
   const client = createClient({ port, browser, autoStart: active && autoStart, waitForConnection: active });
-  if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach(client, args); return; }
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (command === 'browsers') { console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return; }

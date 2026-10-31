@@ -247,37 +247,47 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 
 ## Teach recording
 
-Teach recording captures a walkthrough you do yourself in Chrome so an agent can turn it into a written procedure (SOP). While a session runs, the extension logs every click, typed value, form submit, special key, copy, navigation, new tab, new window and tab switch across all tabs and windows of the profile, with screenshots of the visible tab after meaningful actions. The bridge records your microphone on the same clock. On stop, the speech is transcribed locally with faster-whisper and merged with the actions into one timeline.
+Teach recording captures a walkthrough you do yourself, across the whole desktop, so an agent can turn it into a written procedure (SOP). One session records, on one clock:
 
-Start and stop from a terminal on the computer with Chrome:
+- **Desktop core:** screen video, every mouse click and scroll, typed text (grouped per burst), special keys and shortcuts, and each switch of the foreground window and app. On Windows, clicks also carry the name and type of the clicked control when `uiautomation` is installed.
+- **Microphone:** your voice, transcribed afterwards with timestamps by faster-whisper on your computer.
+- **Browser details (optional):** when Chrome is connected, the extension adds URLs, titles, tabs, popups, form fields, CSS selectors and tab screenshots for actions in Chrome.
+
+Start and stop from a terminal on the computer you are recording:
 
 ```sh
 node bin/cli.js teach start --name "N26 transactions for accountant"
 node bin/cli.js teach stop
 ```
 
-On Windows, double-click `windows\teach-start.cmd` and `windows\teach-stop.cmd`, or run `powershell -ExecutionPolicy Bypass -File windows\install-teach-shortcuts.ps1` once to put **Teach - Start recording** and **Teach - Stop recording** on the Desktop. No administrator rights are needed.
+On Windows, run `powershell -ExecutionPolicy Bypass -File windows\install-teach-shortcuts.ps1` once. It puts **Teach - Start recording** (Ctrl+Alt+F9) and **Teach - Stop recording** (Ctrl+Alt+F10) on the Desktop; they run `windows\teach-start.cmd` and `windows\teach-stop.cmd`. No administrator rights are needed. Start the session from your own desktop session (the shortcut, or a terminal you opened): the recorder runs there so it can see the screen, input and microphone.
+
+`teach start` prints which layers are on and the exact reason for any that are off, for example Windows blocking desktop apps from the microphone (Settings > Privacy & security > Microphone > "Let desktop apps access your microphone") or Chrome not being connected. The other layers keep recording. Options: `--no-audio`, `--no-browser`, `--no-desktop` (browser and microphone only), `--mic "<part of the device name>"` (or `AGENT_BROWSER_MIC`), and `--audio-file <wav>` to play a file in place of the microphone for demos. `teach status` shows the running session; sessions stop by themselves after four hours.
 
 Each session writes a bundle to `%USERPROFILE%\teach-recordings\<id>\` (`~/teach-recordings/<id>/` elsewhere; set `AGENT_BROWSER_TEACH_DIR` to change it):
 
 | File | Contents |
 |---|---|
-| `timeline.md` | Readable timeline: `say` lines (speech) interleaved with actions, element names, selectors, tabs and screenshot links |
+| `timeline.md` | Readable timeline: `say` lines (speech) interleaved with desktop and browser actions, windows, element names, selectors, tabs and screenshot links |
 | `timeline.json` | The same items with full event data; each action has `said`, the speech from 3 s before to 1 s after it |
-| `events.jsonl` | Raw action log: ISO time, `offsetMs` from session start, tab and window IDs, URL, title, element tag, role, accessible name, text, id, name, CSS selector and bounding box |
-| `screenshots/` | JPEG of the visible tab at clicks, submits, Enter, page loads, SPA navigation and tab switches |
+| `desktop-events.jsonl` | Desktop log: ISO time, `offsetMs` from session start, clicks with screen coordinates, typed text, keys, scrolls and foreground window title and app |
+| `events.jsonl` | Browser log: tab and window IDs, URL, title, element tag, role, accessible name, text, id, name, CSS selector and bounding box |
+| `screenshots/` | `d*.jpg`: desktop stills cut from the video before each click (red box at the pointer), after window switches and at Enter; other files: the visible Chrome tab at clicks, submits, page loads and tab switches |
+| `screen.mkv` | Screen video, 3 frames per second |
 | `audio.wav`, `transcript.json` | Microphone audio (16 kHz mono) and segment-level transcript |
-| `manifest.json` | Session times, counts, microphone device, audio start offset, or why audio is missing |
+| `manifest.json` | Session times, the state of each layer, device names and start offsets |
 
-On Windows, `teach stop` also copies the bundle with `scp` to `hetzner:~/tmp/teach-recordings/<id>/` and prints the path. Choose another destination with `--sync host:dir` or `AGENT_BROWSER_TEACH_SYNC`, or skip it with `--no-sync` (`AGENT_BROWSER_TEACH_SYNC=off`). If transcription or sync fails, the timeline is still written with a note; rerun with `teach process <id>`. `teach status` shows the running session. The bridge owns the session, so `teach start` and `teach stop` also work from a remote agent through `tunnel`; the bundle stays on the computer with Chrome until it syncs.
+A desktop click, key or typing burst in Chrome that the extension also logged is folded into the richer browser event.
 
-Requirements on the computer with Chrome: FFmpeg on PATH (or `AGENT_BROWSER_FFMPEG`), and Python with `faster-whisper` (`python -m pip install --user faster-whisper`; set `AGENT_BROWSER_PYTHON` if `python` is not the right interpreter). The first transcription downloads the Whisper model (`AGENT_BROWSER_WHISPER_MODEL`, default `small`). Nothing is sent to a paid service. On Windows the first DirectShow audio device is used; pick another with `--mic "<part of the name>"` or `AGENT_BROWSER_MIC`. If no microphone is available, the session still records actions and `teach start` prints the exact reason, such as Windows blocking desktop apps from the microphone (Settings > Privacy & security > Microphone > "Let desktop apps access your microphone"). `--no-audio` records actions only; `--audio-file <wav>` plays a file in place of the microphone for demos.
+On Windows, `teach stop` also copies the bundle with `scp` to `hetzner:~/tmp/teach-recordings/<id>/` and prints the path. Choose another destination with `--sync host:dir` or `AGENT_BROWSER_TEACH_SYNC`, or skip it with `--no-sync` (`AGENT_BROWSER_TEACH_SYNC=off`). If transcription or sync fails, the timeline is still written with a note; rerun with `teach process <id>`.
 
-Password inputs are recorded as `[password not recorded]`. Everything else you type, including one-time codes, appears in the log, and screenshots show whatever is on screen. Treat bundles as private.
+Requirements on the recorded computer, all user scope: FFmpeg on PATH (or `AGENT_BROWSER_FFMPEG`) and Python with `python -m pip install --user pynput faster-whisper uiautomation` (`uiautomation` is Windows-only and optional; set `AGENT_BROWSER_PYTHON` if `python` is not the right interpreter; on Windows `%USERPROFILE%\.local\bin\python.exe` is used when present). The first transcription downloads the Whisper model (`AGENT_BROWSER_WHISPER_MODEL`, default `small`). Nothing is sent to a paid service. The desktop core works on Windows and on Linux with X11; elsewhere, use `--no-desktop`.
 
-Recording only observes: it uses a content script and `chrome.tabs.captureVisibleTab`, so it does not attach the debugger, show the debugging banner, or move tabs into the agent group. It needs the `scripting`, `webNavigation` and all-sites permissions; after updating, reload the extension once at `chrome://extensions`. Pages Chrome protects, such as `chrome://` pages and the Web Store, are not logged.
+Password inputs in Chrome are recorded as `[password not recorded]`, and the matching desktop keystrokes are redacted when the browser layer is on. Everything else you type, including one-time codes, appears in the log, and the video and screenshots show whatever is on screen. Treat bundles as private.
 
-`node scripts/teach-demo.js` runs a complete session on a local test page in a disposable Chromium profile on port `19444`, with synthetic narration, including a popup tab. It needs Playwright Chromium and leaves your own Chrome untouched.
+The browser layer only observes: it uses a content script and `chrome.tabs.captureVisibleTab`, so it does not attach the debugger, show the debugging banner, or move tabs into the agent group. It needs the `scripting`, `webNavigation` and all-sites permissions; after updating, reload the extension once at `chrome://extensions`. See [docs/teach-recording.md](docs/teach-recording.md) for the design decision.
+
+`node scripts/teach-demo.js` records a complete scripted session on an X11 display (for example `Xvfb :77` with `xfwm4`): a disposable Chromium profile with the extension on port `19444`, a separate Tk notes app, XTest mouse and keyboard input, and synthetic narration. It needs Playwright Chromium and a Python with pynput, tkinter and faster-whisper, and leaves your own Chrome untouched.
 
 ## Trust and limitations
 

@@ -1,6 +1,7 @@
-import { setTimeout as delay } from 'node:timers/promises';
+import { createClient } from './client.js';
+import { createTeachSession } from './teach-session.js';
 
-export const teachUsage = `Usage: teach start [--name <text>] [--mic <device>] [--no-audio] [--audio-file <path>]
+export const teachUsage = `Usage: teach start [--name <text>] [--mic <device>] [--no-audio] [--no-desktop] [--no-browser] [--audio-file <path>]
        teach stop [--no-transcribe] [--no-sync | --sync <ssh-host>:<dir>]
        teach status
        teach process <id> [--no-transcribe] [--no-sync | --sync <ssh-host>:<dir>]`;
@@ -13,51 +14,48 @@ export function teachParams(args) {
     if (!rest[0] || rest[0].startsWith('--')) throw new Error(teachUsage);
     params.id = rest.shift();
   }
+  const starting = action === 'start', finishing = ['stop', 'process'].includes(action);
   while (rest.length) {
     const flag = rest.shift();
-    if (action === 'start' && flag === '--name') params.name = take(flag);
-    else if (action === 'start' && flag === '--mic') params.mic = take(flag);
-    else if (action === 'start' && flag === '--audio-file') params.audioFile = take(flag);
-    else if (action === 'start' && flag === '--no-audio') params.audio = false;
-    else if (['stop', 'process'].includes(action) && flag === '--no-transcribe') params.transcribe = false;
-    else if (['stop', 'process'].includes(action) && flag === '--no-sync') params.sync = false;
-    else if (['stop', 'process'].includes(action) && flag === '--sync') params.sync = take(flag);
+    if (starting && flag === '--name') params.name = take(flag);
+    else if (starting && flag === '--mic') params.mic = take(flag);
+    else if (starting && flag === '--audio-file') params.audioFile = take(flag);
+    else if (starting && flag === '--no-audio') params.audio = false;
+    else if (starting && flag === '--no-desktop') params.desktop = false;
+    else if (starting && flag === '--no-browser') params.browser = false;
+    else if (finishing && flag === '--no-transcribe') params.transcribe = false;
+    else if (finishing && flag === '--no-sync') params.sync = false;
+    else if (finishing && flag === '--sync') params.sync = take(flag);
     else throw new Error(teachUsage);
   }
   if (!['start', 'stop', 'status', 'process'].includes(action)) throw new Error(teachUsage);
   return { action, params };
 }
 
-const print = value => console.log(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+const print = value => console.log(JSON.stringify(value, null, 2));
+const layerLine = (label, layer) => `${label}: ${layer?.status === 'recording' ? `on${layer.device ? ` (${layer.device})` : ''}` : `OFF — ${layer?.reason || 'not requested'}`}`;
 
-async function waitForProcessing(client, id, { interval = 2000, log = console.error } = {}) {
-  let last = '';
-  for (;;) {
-    const status = await client.call('teach.status', { id });
-    if (status.state !== 'processing') return status;
-    const line = 'Transcribing and building the timeline…';
-    if (line !== last) { log(line); last = line; }
-    await delay(interval);
-  }
-}
-
-export async function runTeach(client, args, options = {}) {
+export async function runTeach({ port, browser, autoStart }, args, { session } = {}) {
   const { action, params } = teachParams(args);
-  if (action === 'status') { print(await client.call('teach.status', {})); return; }
+  // The browser layer is optional, so do not wait long for Chrome.
+  const client = createClient({ port, browser, autoStart: autoStart && action === 'start', waitForConnection: true, connectTimeout: 8000 });
+  session ??= createTeachSession({ browserLayer: {
+    start: values => client.call('teach.start', values),
+    stop: () => client.call('teach.stop', {})
+  } });
+  if (action === 'status') { print(await session.status()); return; }
   if (action === 'start') {
-    const result = await client.call('teach.start', params);
+    const result = await session.start(params);
     print(result);
     console.error(`\nRecording "${result.id}" into ${result.dir}`);
-    console.error(result.audio?.status === 'recording' ? `Microphone: ${result.audio.device}` : `WARNING: no audio — ${result.audio?.reason}`);
+    console.error([layerLine('Microphone', result.audio), layerLine('Screen video', result.screen), layerLine('Mouse/keyboard/windows', result.hooks), layerLine('Browser details', result.browser)].join('\n'));
     console.error('Stop with: teach stop');
     return;
   }
-  const started = await client.call(action === 'stop' ? 'teach.stop' : 'teach.process', params);
-  console.error(`Stopped "${started.id}" (${started.events} events, ${started.screenshots} screenshots, audio ${started.audio?.status}).`);
-  const final = await waitForProcessing(client, started.id, options);
-  print(final);
-  if (final.state === 'failed') throw new Error(`Processing failed: ${final.error}`);
-  const result = final.result || {};
-  for (const note of result.notes || []) console.error(`Note: ${note}`);
-  console.error(`\nBundle: ${final.dir}\nTimeline: ${result.timeline}${result.synced ? `\nSynced to: ${result.synced}` : ''}`);
+  const { manifest, result } = action === 'stop'
+    ? await session.stop({ ...params, onProgress: line => console.error(line) })
+    : await session.reprocess(params);
+  print({ id: manifest.id, dir: manifest.dir, ...result });
+  for (const note of [...(manifest.notes || []), ...(result.notes || [])]) console.error(`Note: ${note}`);
+  console.error(`\nBundle: ${manifest.dir}\nTimeline: ${result.timeline}${result.synced ? `\nSynced to: ${result.synced}` : ''}`);
 }

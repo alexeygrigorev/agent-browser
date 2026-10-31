@@ -130,10 +130,9 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
         if (command.browser && record && select(command.browser).id !== record.browserId) return reply(res, 400, { error: 'Recording belongs to a different browser' });
         return reply(res, 200, { result: await recordings.stop(command.params) });
       }
-      // Stopping and post-processing must work even after Chrome went away.
+      // Stopping must work even after Chrome went away.
       if (command.method === 'teach.stop') return reply(res, 200, { result: await teach.stop({ ...command.params, browserId: command.browser }) });
-      if (command.method === 'teach.status') return reply(res, 200, { result: teach.status(command.params) });
-      if (command.method === 'teach.process') return reply(res, 200, { result: await teach.reprocess(command.params) });
+      if (command.method === 'teach.status') return reply(res, 200, { result: teach.status() });
       if (command.method === 'recording.list') {
         const result = recordings.list();
         return reply(res, 200, { result: command.browser ? result.filter(r => r.browserId === select(command.browser).id) : result });
