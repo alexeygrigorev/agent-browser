@@ -60,6 +60,9 @@ test('download save streams bytes, preserves existing files, and cleans interrup
   await assert.rejects(stat(partial), error => error.code === 'ENOENT');
   assert.equal(requests[1], '/downloads/2/file?browser=orin');
   await assert.rejects(client.saveDownload(-1, partial), /non-negative integer/);
+  const nested = join(directory, 'missing', 'folders', 'saved.bin');
+  assert.deepEqual(await client.saveDownload(1, nested), { id: 1, path: nested, bytes: bytes.length });
+  assert.deepEqual(await readFile(nested), bytes);
 });
 
 test('uploads stage client bytes and original filename before assigning desktop paths', async t => {

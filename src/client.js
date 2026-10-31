@@ -1,8 +1,8 @@
 import { launchBridge } from './launcher.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { stat, open, unlink } from 'node:fs/promises';
+import { mkdir, stat, open, unlink } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 
@@ -91,6 +91,7 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
       const selectedBrowser = options.browser ?? browser;
       if (selectedBrowser !== undefined && (typeof selectedBrowser !== 'string' || !selectedBrowser.trim())) throw new Error('Browser must be a non-empty nickname or ID');
       const path = resolve(output);
+      await mkdir(dirname(path), { recursive: true });
       // Acquire the destination exclusively before any network activity. Cleanup
       // is only permitted once this invocation has created the file.
       const file = await open(path, 'wx');

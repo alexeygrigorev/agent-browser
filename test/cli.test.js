@@ -5,12 +5,12 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
-function run(args, input, env = {}) {
+function run(args, input, env = {}, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/cli.js', import.meta.url)), ...args], {
-      env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe']
+      env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'], cwd
     });
     let stdout = '', stderr = '';
     child.stdout.on('data', data => { stdout += data; });
@@ -96,6 +96,31 @@ test('CLI exports screenshot bytes to a new file and refuses overwrite', async t
   const second = await run(['screenshot', '42', '--output', path], '', env);
   assert.equal(second.code, 1);
   assert.match(second.stderr, /EEXIST/);
+});
+
+test('CLI screenshot creates missing parent folders for relative and absolute outputs', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-browser-screenshot-dirs-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/status')) return res.end(JSON.stringify({ connected: true }));
+    for await (const chunk of req) void chunk;
+    res.end(JSON.stringify({ result: { data: png.toString('base64') } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const env = { AGENT_BROWSER_PORT: String(server.address().port) };
+  // Native separators: on Windows this is exactly `scratch\\x.png`.
+  const relative = ['scratch', 'x.png'].join(sep);
+  const first = await run(['--no-autostart', 'screenshot', '42', '--output', relative], '', env, directory);
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).path, join(directory, 'scratch', 'x.png'));
+  assert.deepEqual(await readFile(join(directory, 'scratch', 'x.png')), png);
+  const absolute = join(directory, 'a', 'b', 'c', 'shot.jpg');
+  const second = await run(['--no-autostart', 'screenshot', '42', '--output', absolute], '', env);
+  assert.equal(second.code, 0, second.stderr);
+  assert.deepEqual(await readFile(absolute), png);
 });
 
 test('CLI download commands preserve filenames and return desktop metadata', async t => {

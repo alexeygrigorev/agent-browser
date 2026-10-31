@@ -50,6 +50,6 @@ node bin/cli.js --browser main record list
 node bin/cli.js --browser main record stop RECORDING_ID
 ```
 
-Screenshot files must not exist; `.jpg`/`.jpeg` selects JPEG. Retain the recording ID and stop it when finished. Videos are silent WebM sampled from viewport frames, not audio or native screencasts. Desktop FFmpeg with `libvpx-vp9` must be on PATH or configured by `AGENT_BROWSER_FFMPEG`.
+Screenshot files must not exist; missing parent folders are created; `.jpg`/`.jpeg` selects JPEG. Retain the recording ID and stop it when finished. Videos are silent WebM sampled from viewport frames, not audio or native screencasts. Desktop FFmpeg with `libvpx-vp9` must be on PATH or configured by `AGENT_BROWSER_FFMPEG`.
 
 Existing logins permit real account actions; stay within the user's task. Local processes can control the connected browser, so keep the bridge on loopback. Do not export cookies or modify unrelated tabs to establish access.

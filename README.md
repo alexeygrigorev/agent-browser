@@ -97,7 +97,7 @@ Get a tab ID from `tabs.list`, then save a screenshot directly to a new file:
 node bin/cli.js --browser main screenshot 123 --output screenshot.png
 ```
 
-A `.jpg` or `.jpeg` output suffix selects JPEG; other suffixes produce PNG. Existing files are not overwritten. MCP `page_screenshot` returns image content directly, and the generic `page.screenshot` command returns base64 data.
+A `.jpg` or `.jpeg` output suffix selects JPEG; other suffixes produce PNG. Missing parent folders are created, so `--output scratch\x.png` works on Windows without creating `scratch` first. Existing files are not overwritten. `downloads save --output` creates parent folders the same way. MCP `page_screenshot` returns image content directly, and the generic `page.screenshot` command returns base64 data.
 
 Record a tab to silent WebM video:
 

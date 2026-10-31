@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createBridge } from '../src/bridge.js';
 import { createClient, getPort } from '../src/client.js';
-import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 
 const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
 
@@ -15,7 +15,7 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   downloads [list|info <id>|wait <id>|start <URL> [--filename <relative>]]
   downloads save <id> --output <path>  Copy a completed download to this computer
   download <URL> [--filename <relative>]  Start a browser download
-  screenshot <tabId> --output <path>  Save a PNG screenshot (new file)
+  screenshot <tabId> --output <path>  Save a PNG screenshot (new file; creates parent folders)
   record start <tabId> [--output <path>]  Start a recording
   record stop <id>         Stop a recording
   tunnel <ssh-host> [--remote-port <port>]  Forward this bridge to a remote host
@@ -90,6 +90,7 @@ async function main() {
   if (command === 'screenshot') {
     if (args.length !== 3 || args[1] !== '--output' || !Number.isInteger(Number(args[0]))) throw new Error('Usage: screenshot <tabId> --output <path>');
     const path = resolve(args[2]);
+    await mkdir(dirname(path), { recursive: true });
     const format = /\.jpe?g$/i.test(path) ? 'jpeg' : 'png';
     const image = await client.call('page.screenshot', { tabId: Number(args[0]), format });
     const data = image.data || image.dataUrl?.split(',')[1];

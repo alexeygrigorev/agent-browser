@@ -51,6 +51,6 @@ Download using `node bin/cli.js --no-autostart --browser main download URL`, the
 
 Retrieve the bytes remotely with `node bin/cli.js --no-autostart --browser main downloads save DOWNLOAD_ID --output ./report.pdf`. This creates a new file on the remote agent's computer without overwriting existing files. MCP `downloads_save` performs the same transfer; do not treat Chrome's desktop path as a remote filesystem path.
 
-The CLI supports `screenshot 123 --output shot.png` and `record start 123 --output demo.webm`, followed by `record stop RECORDING_ID`. Screenshots are saved on the CLI computer; recording paths belong to the desktop bridge computer. Silent sampled-frame WebM requires desktop FFmpeg with `libvpx-vp9` on PATH or `AGENT_BROWSER_FFMPEG`.
+The CLI supports `screenshot 123 --output shot.png` and `record start 123 --output demo.webm`, followed by `record stop RECORDING_ID`. Screenshots are saved on the CLI computer, creating missing parent folders; recording paths belong to the desktop bridge computer. Silent sampled-frame WebM requires desktop FFmpeg with `libvpx-vp9` on PATH or `AGENT_BROWSER_FFMPEG`.
 
 The trusted remote host's local processes gain browser control while the tunnel is open. Keep listeners on loopback and close the SSH session when finished. Existing accounts remain signed in; browser actions must stay within the user's task.
