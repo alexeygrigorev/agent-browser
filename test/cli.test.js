@@ -182,3 +182,32 @@ test('CLI download commands preserve filenames and return desktop metadata', asy
   ]);
 });
 
+
+test('CLI extension info and reload map to bridge methods and reject unknown actions', async t => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/status')) return res.end(JSON.stringify({ connected: true }));
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    requests.push(JSON.parse(body));
+    res.end(JSON.stringify({ result: { extension: { code: 'c'.repeat(64), current: true } } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const env = { AGENT_BROWSER_PORT: String(server.address().port), AGENT_BROWSER_NAME: '' };
+  for (const args of [['--browser', 'main', 'extension'], ['--browser', 'main', 'extension', 'info'], ['--browser', 'orin', 'extension', 'reload']]) {
+    const result = await run(args, '', env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).extension.current, true);
+  }
+  assert.deepEqual(requests, [
+    { method: 'extension.info', params: {}, browser: 'main' },
+    { method: 'extension.info', params: {}, browser: 'main' },
+    { method: 'extension.reload', params: {}, browser: 'orin' }
+  ]);
+  const usage = await run(['--browser', 'main', 'extension', 'restart'], '', env);
+  assert.equal(usage.code, 1);
+  assert.match(usage.stderr, /Usage: extension \[info\|reload\]/);
+  assert.equal(requests.length, 3);
+});

@@ -315,7 +315,27 @@ try {
   await popup.locator('#connect').click();
   await eventually(async () => (await qualifiedStatus('main')).connected, 'main resume without credentials');
   assert.ok((await textTool('tabs_list')).some(tab => tab.id === tabId), 'MCP works after reconnecting');
-  console.log('Browser E2E passed: two profiles with persistent main/orin nicknames, automatic reconnect, isolated HttpOnly sessions, CLI/MCP routing, PNG screenshots, decodable WebM recording, independent pause/resume.');
+
+  // Reload proves which code is live: the worker reloads its files from disk and reconnects.
+  // Chrome disables an unpacked extension on reload unless Developer mode is on, as it is
+  // for anyone who used Load unpacked.
+  const extensionsPage = await context.newPage();
+  await extensionsPage.goto('chrome://extensions');
+  await extensionsPage.evaluate(() => new Promise(resolve => chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true }, resolve)));
+  await extensionsPage.close();
+  const loaded = await cli(['extension']);
+  assert.match(loaded.extension.code, /^[a-f0-9]{64}$/);
+  // A non-default port runs a patched copy, so only the default port matches the checkout.
+  assert.equal(loaded.extension.current, port === 19333, 'extension code matches the bridge checkout');
+  if (port !== 19333) await writeFile(join(extension, 'popup.css'), `${await readFile(join(extension, 'popup.css'), 'utf8')}\n/* reload probe */\n`);
+  const reloaded = await cli(['extension', 'reload']);
+  assert.equal(reloaded.reloaded, true);
+  assert.equal(reloaded.before.code, loaded.extension.code);
+  if (port === 19333) assert.equal(reloaded.extension.code, loaded.extension.code);
+  else assert.notEqual(reloaded.extension.code, loaded.extension.code, 'reload picks up edited extension files');
+  assert.equal(reloaded.browser.name, 'main');
+  assert.ok((await textTool('tabs_list')).some(tab => tab.id === tabId), 'MCP works after extension reload');
+  console.log('Browser E2E passed: two profiles with persistent main/orin nicknames, automatic reconnect, isolated HttpOnly sessions, CLI/MCP routing, extension reload, PNG screenshots, decodable WebM recording, independent pause/resume.');
 } finally {
   await mcp?.close();
   await context?.close();

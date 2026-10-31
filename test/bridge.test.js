@@ -4,11 +4,12 @@ import { once } from 'node:events';
 import http from 'node:http';
 import { WebSocket } from 'ws';
 import { createBridge } from '../src/bridge.js';
+import { localCode } from '../src/extension-code.js';
 
 const origin = `chrome-extension://${'a'.repeat(32)}`;
 
-async function fixture(t, timeout = 2000) {
-  const bridge = createBridge({ port: 0, timeout });
+async function fixture(t, timeout = 2000, options = {}) {
+  const bridge = createBridge({ port: 0, timeout, ...options });
   const address = await bridge.listen();
   const base = `http://127.0.0.1:${address.port}`;
   t.after(() => bridge.close());
@@ -137,4 +138,70 @@ test('malformed extension messages close the connection', async t => {
   const closed = once(ws, 'close');
   ws.send('{');
   assert.equal((await closed)[0], 1008);
+});
+
+const codeFiles = ['manifest.json', 'background.js'];
+const hello = async (browserId, sha256) => ({ type: 'hello', protocol: 1, browserId, version: '0.1.0', code: { sha256: sha256 ?? await localCode(codeFiles), files: codeFiles } });
+
+test('extension handshake proves which code is live and flags a mismatch with the bridge checkout', async t => {
+  const diagnostics = [];
+  const { command, connect } = await fixture(t, 2000, { onDiagnostic: event => diagnostics.push(event) });
+  await connect(await hello('current'));
+  const info = (await (await command('extension.info')).json()).result;
+  assert.equal(info.extension.current, true);
+  assert.equal(info.extension.code, await localCode(codeFiles));
+  assert.equal(info.extension.version, '0.1.0');
+  assert.match(info.bridge.git ?? '', /^([a-f0-9]{40})?$/);
+  assert.equal(diagnostics.some(event => event.event === 'extension_mismatch'), false);
+
+  await connect(await hello('stale', 'f'.repeat(64)));
+  const mismatch = diagnostics.find(event => event.event === 'extension_mismatch');
+  assert.equal(mismatch.browser.id, 'stale');
+  assert.equal(mismatch.extension.code, 'f'.repeat(64));
+  assert.equal(mismatch.extension.expected, await localCode(codeFiles));
+
+  await connect({ type: 'hello', protocol: 1, browserId: 'legacy-worker' });
+  assert.deepEqual(diagnostics.filter(event => event.event === 'extension_mismatch').at(-1).extension, { version: null, code: null, expected: null, current: false });
+});
+
+test('extension file lists cannot escape the extension directory', async () => {
+  assert.equal(await localCode(['../package.json']), null);
+  assert.equal(await localCode(['missing.js']), null);
+  assert.equal(await localCode([]), null);
+});
+
+test('extension reload waits for the reloaded worker to reconnect and reports its new code', async t => {
+  const { command, connect } = await fixture(t);
+  const old = await connect(await hello('reloading', 'a'.repeat(64)));
+  old.ws.on('message', async raw => {
+    const message = JSON.parse(raw);
+    if (message.method !== 'extension.reload') return;
+    old.ws.send(JSON.stringify({ id: message.id, result: { reloading: true } }));
+    old.ws.close();
+    await once(old.ws, 'close');
+    await connect(await hello('reloading'));
+  });
+  const result = (await (await command('extension.reload')).json()).result;
+  assert.equal(result.reloaded, true);
+  assert.equal(result.before.code, 'a'.repeat(64));
+  assert.equal(result.before.current, false);
+  assert.equal(result.extension.code, await localCode(codeFiles));
+  assert.equal(result.extension.current, true);
+});
+
+test('extension reload explains the one manual reload an older extension needs, and times out cleanly', async t => {
+  const { command, connect, request } = await fixture(t, 2000, { reloadTimeout: 200 });
+  const old = await connect({ type: 'hello', protocol: 1, browserId: 'old-worker' });
+  old.ws.on('message', raw => {
+    const message = JSON.parse(raw);
+    old.ws.send(JSON.stringify({ id: message.id, error: `Unknown method: ${message.method}` }));
+  });
+  const response = await command('extension.reload');
+  assert.equal(response.status, 502);
+  assert.match((await response.json()).error, /predates extension reload.*chrome:\/\/extensions/);
+
+  const stuck = await connect(await hello('stuck'));
+  stuck.ws.on('message', raw => stuck.ws.send(JSON.stringify({ id: JSON.parse(raw).id, result: { reloading: true } })));
+  const timedOut = await request('/command', { method: 'POST', body: JSON.stringify({ method: 'extension.reload', params: {}, browser: 'stuck' }) });
+  assert.match((await timedOut.json()).error, /did not reconnect within 0.2s/);
 });

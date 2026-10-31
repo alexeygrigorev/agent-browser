@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, webcrypto } from 'node:crypto';
+import { readdir } from 'node:fs/promises';
+import { localCode } from '../src/extension-code.js';
 
 async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) }, sessionConfig = {}, initialGroups = [], uploadNode = { localName: 'input', attributes: ['type', 'file', 'multiple', ''] } } = {}) {
   const calls = [];
@@ -12,6 +14,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   let alarm;
   let connections = 0;
   let generatedIds = 0;
+  let reloads = 0;
   let timerId = 0;
   const timers = new Map();
   const session = { ...sessionConfig };
@@ -84,7 +87,8 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
       }
     },
     alarms: { create() {}, onAlarm: { addListener(fn) { alarm = fn; } } },
-    runtime: { id: 'extension-id', onMessage: { addListener(fn) { listener = fn; } } }
+    runtime: { id: 'extension-id', onMessage: { addListener(fn) { listener = fn; } }, onInstalled: { addListener() {} }, onStartup: { addListener() {} },
+      getManifest: () => ({ version: '0.1.0' }), getURL: path => `chrome-extension://extension-id/${path}`, reload: () => { reloads++; } }
   };
   class WebSocket {
     static OPEN = 1;
@@ -92,11 +96,15 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
     send(value) { this.sent.push(JSON.parse(value)); }
     close() { this.readyState = 3; this.onclose?.(); }
   }
-  const context = vm.createContext({ chrome, WebSocket, crypto: { randomUUID: () => { generatedIds++; return randomUUID(); } }, setInterval: () => 1, clearInterval() {},
+  // Serves the real extension files, as the unpacked extension would from disk.
+  const fetch = async url => { const text = await readFile(new URL(`./${url.split('/').pop()}`, import.meta.url), 'utf8'); return { text: async () => text }; };
+  const context = vm.createContext({ chrome, WebSocket, fetch, TextEncoder, crypto: { subtle: webcrypto.subtle, randomUUID: () => { generatedIds++; return randomUUID(); } }, setInterval: () => 1, clearInterval() {},
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; },
     clearTimeout: id => timers.delete(id)
   });
   vm.runInContext(await readFile(new URL('./background.js', import.meta.url), 'utf8'), context);
+  // Startup hashes the extension files before connecting.
+  await vm.runInContext('startup', context);
   await new Promise(resolve => setImmediate(resolve));
   return { calls, stored, socket, downloads, tabs, nativeGroups, session,
     currentSocket: () => socket,
@@ -109,6 +117,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
     },
     alarm: () => alarm({ name: 'reconnect' }),
     connections: () => connections,
+    reloads: () => reloads,
     generatedIds: () => generatedIds,
     command: async (method, params = {}) => {
       await socket.onmessage({ data: JSON.stringify({ id: 'test', method, params }) });
@@ -122,7 +131,9 @@ test('first install automatically introduces itself to the fixed loopback bridge
   const { socket, message, stored } = await setup({ config: {} });
   socket.onopen();
   assert.equal(socket.url, 'ws://127.0.0.1:19333/extension');
-  assert.deepEqual(socket.sent[0], { type: 'hello', protocol: 1, browserId: stored.browserId });
+  const { code, ...hello } = socket.sent[0];
+  assert.deepEqual(hello, { type: 'hello', protocol: 1, browserId: stored.browserId, version: '0.1.0' });
+  assert.match(code.sha256, /^[a-f0-9]{64}$/);
   assert.match(stored.browserId, /^[a-f0-9-]{36}$/);
   assert.equal((await message({ type: 'status' })).enabled, true);
 });
@@ -511,4 +522,38 @@ test('session-owned groups survive worker restart and title-matching human group
   const stale = await setup({ config: { browserId }, sessionConfig: { managedGroups: [{ id: 99, windowId: 1, ownerId: browserId, autoLabel: true }] } });
   await stale.command('groups.manage', { tabId: 7 });
   assert.equal(stale.tabs.get(7).groupId, 100);
+});
+
+test('hello reports a code hash that the bridge reproduces from the same extension directory', async () => {
+  const { socket } = await setup();
+  socket.onopen();
+  const { code } = socket.sent[0];
+  assert.equal(code.sha256, await localCode(code.files));
+  assert.notEqual(code.sha256, await localCode(code.files.slice(1)), 'every listed file contributes');
+});
+
+test('the hashed file list covers every extension source file', async () => {
+  const { socket } = await setup();
+  socket.onopen();
+  const sources = (await readdir(new URL('.', import.meta.url))).filter(file => /\.(js|html|css|json)$/.test(file) && !file.endsWith('.test.js'));
+  assert.deepEqual([...socket.sent[0].code.files].sort(), sources.sort());
+});
+
+test('extension reload replies with the running code, then reloads even while the page queue is busy', async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const { socket, command, runTimer, reloads } = await setup({ beforeCommand: method => method === 'Input.dispatchMouseEvent' ? blocked : undefined });
+  socket.onopen();
+  const click = socket.onmessage({ data: JSON.stringify({ id: 'click', method: 'page.click', params: { tabId: 7, x: 1, y: 2 } }) });
+  await new Promise(resolve => setImmediate(resolve));
+  const info = await command('extension.info');
+  assert.deepEqual(info.result, { version: '0.1.0', code: socket.sent[0].code });
+  const reply = await command('extension.reload');
+  assert.equal(reply.result.reloading, true);
+  assert.equal(reply.result.code.sha256, socket.sent[0].code.sha256);
+  assert.equal(reloads(), 0, 'the reply is sent before the worker reloads');
+  await runTimer(100);
+  assert.equal(reloads(), 1);
+  release();
+  await click;
 });

@@ -20,6 +20,8 @@ const definitions = [
   ['recording.start', 'Start recording a browser tab to a local video file', object({ tabId, path: string('Output path on the bridge machine'), fps: { type: 'number', minimum: 1, maximum: 60 } })],
   ['recording.stop', 'Stop a recording and finalize its video file', object({ id: string('Recording ID') })],
   ['recording.list', 'List recordings', object({})],
+  ['extension.info', 'Show the extension version and code hash, and whether it matches this bridge', object({})],
+  ['extension.reload', 'Reload the unpacked Chrome extension from disk and wait until it reconnects; reports the new code hash', object({})],
   ['browser.info', 'Show the connected browser identity and nickname', object({})],
   ['browser.rename', 'Persist a nickname for the connected browser', object({ name: string('Browser nickname') })],
   ['tabs.list', 'List open browser tabs', object({})],
@@ -40,7 +42,7 @@ const definitions = [
 ];
 for (const [method, , schema] of definitions) {
   schema.properties.browser = string('Optional browser nickname or ID to select');
-  const required = ['tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop', 'downloads.start', 'downloads.list', 'downloads.info', 'downloads.wait', 'downloads.save', 'groups.list'].includes(method) ? [] : ['tabId'];
+  const required = ['extension.info', 'extension.reload', 'tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop', 'downloads.start', 'downloads.list', 'downloads.info', 'downloads.wait', 'downloads.save', 'groups.list'].includes(method) ? [] : ['tabId'];
   if (method === 'downloads.save') required.push('id', 'output');
   if (method === 'page.upload') required.push('selector', 'files');
   if (method === 'downloads.start') required.push('url');

@@ -15,7 +15,19 @@ const attached = new Set();
 const initializing = new Map();
 const managedGroups = new Map();
 let groupQueue = Promise.resolve();
+// Every source file this extension loads. The worker hashes them at startup and
+// reports the hash in its hello, so the bridge can prove which code is live and
+// warn when the loaded extension differs from the bridge's extension directory.
+const CODE_FILES = ['manifest.json', 'background.js', 'popup.html', 'popup.js', 'popup.css', 'teach.js', 'teach-content.js'];
+let code = null;
+async function hashCode() {
+  // Line endings are normalized so Windows (CRLF) and POSIX checkouts agree.
+  const texts = await Promise.all(CODE_FILES.map(async file => (await (await fetch(chrome.runtime.getURL(file))).text()).replace(/\r\n/g, '\n')));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(CODE_FILES.map((file, index) => `${file}\0${texts[index]}`).join('\0')));
+  return { sha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join(''), files: CODE_FILES };
+}
 const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError', 'browserId']).then(async config => {
+  code = await hashCode().catch(() => null);
   browserId = config.browserId || crypto.randomUUID();
   if (!config.browserId) await chrome.storage.local.set({ browserId });
   browser = { id: browserId, connected: false };
@@ -225,6 +237,12 @@ async function mouse(tabId, type, { x, y }, { button = 'left', clickCount = 1 } 
 }
 
 async function dispatch(method, params = {}) {
+  if (method === 'extension.info') return { version: chrome.runtime.getManifest().version, code };
+  if (method === 'extension.reload') {
+    // Reply first; the bridge then waits for the reloaded worker to reconnect.
+    setTimeout(() => chrome.runtime.reload(), 100);
+    return { reloading: true, version: chrome.runtime.getManifest().version, code };
+  }
   if (method === 'groups.list') {
     const groups = await Promise.all([...managedGroups.keys()].map(existingGroup));
     return groups.filter(Boolean);
@@ -333,7 +351,7 @@ function connect() {
   reconnectTimer = undefined;
   status = 'Connecting…';
   const ws = socket = new WebSocket(ENDPOINT);
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', protocol: 1, browserId }));
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', protocol: 1, browserId, version: chrome.runtime.getManifest().version, code }));
   ws.onmessage = async event => {
     if (socket !== ws || !enabled) return;
     let message;
@@ -365,7 +383,8 @@ function connect() {
       };
       // Transfers and dialog handling must not wait behind page actions; a dialog
       // can be the reason an earlier navigation or tab close is still waiting.
-      const bypassQueue = ['downloads.wait', 'dialogs.handle'].includes(message.method);
+      // Reloading is the way out of a stuck queue, so it never waits either.
+      const bypassQueue = ['downloads.wait', 'dialogs.handle', 'extension.info', 'extension.reload'].includes(message.method);
       const work = bypassQueue ? execute() : commandQueue.then(execute);
       if (!bypassQueue) commandQueue = work.catch(() => {});
       const result = await work;
@@ -420,6 +439,10 @@ chrome.tabGroups.onRemoved.addListener(group => {
   for (const [windowId, known] of managedGroups) if (known.id === group.id) managedGroups.delete(windowId);
   saveGroups().catch(() => {});
 });
+// Chrome starts the worker for these events after a reload or browser launch;
+// loading the script is enough to connect.
+chrome.runtime.onInstalled.addListener(() => {});
+chrome.runtime.onStartup.addListener(() => {});
 chrome.alarms.create('reconnect', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(async ({ name }) => {
   await startup;

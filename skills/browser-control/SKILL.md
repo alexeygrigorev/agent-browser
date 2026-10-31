@@ -45,7 +45,11 @@ node bin/cli.js --browser main mouse move 123 400 300
 node bin/cli.js --browser main mouse up 123
 ```
 
-`click` also takes `--count 2`. `mouse down|up` default to the last pointer point and take `--button`. Generic/MCP forms: `page.click`, `page.hover`, `page.mouse` (`action` move/down/up). If they report `Unknown method`, the extension needs one reload in `chrome://extensions`.
+`click` also takes `--count 2`. `mouse down|up` default to the last pointer point and take `--button`. Generic/MCP forms: `page.click`, `page.hover`, `page.mouse` (`action` move/down/up). If they report `Unknown method`, the Chrome extension is outdated (the bridge forwards page methods unchanged). Run `--browser NAME extension reload`, and if that also says `Unknown method`, the extension needs one manual reload in `chrome://extensions` (or a Chrome restart).
+
+## Which extension code is live
+
+`--browser NAME extension` shows the extension version, its source hash (`extension.code`), and `extension.current` (true when it matches this checkout's `extension` directory). After a `git pull`, run `--browser NAME extension reload`: it reloads from disk, waits for the reconnect, and prints the new hash. If `bridge.restartNeeded` is true, the bridge process predates the pull and needs a restart. Reloading needs Developer mode on in `chrome://extensions`. It does not restart Chrome or close tabs.
 
 For non-ASCII JSON on PowerShell 5.1, use a UTF-8 file with `--params-file params.json` or set `$OutputEncoding` to UTF-8. The repository README's Browser commands table covers navigation, keys, scrolling, evaluation, and CDP parameters.
 

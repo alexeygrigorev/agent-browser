@@ -44,6 +44,8 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   browser                  Show the connected browser identity
   browser name <nickname>  Save a nickname for the connected browser
   browsers                 List connected browsers
+  extension [info]         Show the extension's version and code hash versus this bridge
+  extension reload         Reload the unpacked extension from disk and wait for it to reconnect
   upload <tabId> <selector> <file...>  Upload files from this computer
   downloads [list|info <id>|wait <id>|start <URL> [--filename <relative>]]
   downloads save <id> --output <path>  Copy a completed download to this computer
@@ -83,10 +85,19 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach'].includes(command)) throw new Error(`Unknown command: ${command}\n${help}`);
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+${help}`);
   const port = getPort();
   if (command === 'serve') {
-    const bridge = createBridge({ port, onDiagnostic: event => console.error(`[browser-bridge] ${JSON.stringify(event)}`) });
+    const bridge = createBridge({ port, onDiagnostic: event => {
+      console.error(`[browser-bridge] ${JSON.stringify(event)}`);
+      if (event.event === 'extension_mismatch') {
+        const label = event.browser.name || event.browser.id;
+        const running = event.extension.code ? `code ${event.extension.code.slice(0, 12)}` : 'code that predates the version handshake';
+        const expected = event.extension.expected ? `this bridge's extension directory has ${event.extension.expected.slice(0, 12)}` : 'this bridge has a newer extension';
+        console.error(`[browser-bridge] WARNING: browser ${label} runs extension ${running} (version ${event.extension.version ?? 'unknown'}), but ${expected}. ${event.extension.code ? `Run: agent-browser-bridge --browser ${label} extension reload` : 'Reload it once in chrome://extensions; later updates can use extension reload.'}`);
+      }
+    } });
     try { await bridge.listen(); }
     catch (error) { if (error.code === 'EADDRINUSE') return; throw error; }
     console.log(`Browser bridge listening on http://127.0.0.1:${port}\nThe installed Chrome extension connects automatically.`);
@@ -154,6 +165,11 @@ async function main() {
     else if (args[0] === 'list' && args.length === 1) { method = 'recording.list'; params = {}; }
     else throw new Error('Usage: record start <tabId> [--output <path>] | record stop <id> | record list');
     console.log(JSON.stringify(await client.call(method, params), null, 2));
+    return;
+  }
+  if (command === 'extension') {
+    if (!(args.length === 0 || (args.length === 1 && ['info', 'reload'].includes(args[0])))) throw new Error('Usage: extension [info|reload]');
+    console.log(JSON.stringify(await client.call(`extension.${args[0] || 'info'}`), null, 2));
     return;
   }
   if (command === 'browser') {

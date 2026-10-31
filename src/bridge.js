@@ -9,10 +9,47 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { extensionDir as defaultExtensionDir, gitHead, localCode, packageVersion } from './extension-code.js';
 
-export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () => {}, names = createBrowserNames(), files = createFiles(), teachOptions = {} } = {}) {
+export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25000, onDiagnostic = () => {}, names = createBrowserNames(), files = createFiles(), teachOptions = {}, extensionDir = defaultExtensionDir } = {}) {
   const browsers = new Map();
   const pending = new Map();
+  const reconnects = new Map();
+  // The code this bridge process started with; a later pull only takes effect after a restart.
+  const bridgeInfo = { version: packageVersion(), git: gitHead() };
+  // Compares the code the extension reports with this bridge's extension directory.
+  async function describeExtension(hello) {
+    const version = typeof hello.version === 'string' ? hello.version.slice(0, 40) : null;
+    const code = typeof hello.code?.sha256 === 'string' && /^[a-f0-9]{64}$/.test(hello.code.sha256) ? hello.code.sha256 : null;
+    const expected = code ? await localCode(hello.code.files, extensionDir) : null;
+    return { version, code, expected, current: code ? (expected ? code === expected : null) : false };
+  }
+  const extensionInfo = browser => {
+    const head = gitHead();
+    return { browser: metadata(browser), extension: browser.extension, bridge: { ...bridgeInfo, ...(head && head !== bridgeInfo.git ? { checkout: head, restartNeeded: true } : {}) } };
+  };
+  const waitForReconnect = (id, previous) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { reconnects.get(id)?.delete(done); reject(new Error(`Extension did not reconnect within ${reloadTimeout / 1000}s after reloading; check that Developer mode is on in chrome://extensions (Chrome disables unpacked extensions on reload without it) and that the extension shows no errors`)); }, reloadTimeout);
+    const done = browser => { if (browser === previous) return; clearTimeout(timer); reconnects.get(id).delete(done); resolve(browser); };
+    if (!reconnects.has(id)) reconnects.set(id, new Set());
+    reconnects.get(id).add(done);
+  });
+  async function reloadExtension(browser) {
+    const before = browser.extension;
+    const reconnected = waitForReconnect(browser.id, browser);
+    reconnected.catch(() => {});
+    let response;
+    // The worker may close its socket before the reply arrives; the reconnect still proves the reload.
+    try { response = await send(browser, 'extension.reload', {}); }
+    catch (error) { if (!/disconnected/.test(error.message)) throw error; }
+    if (response?.error) {
+      const message = typeof response.error === 'string' ? response.error : response.error.message;
+      if (/Unknown method/.test(message)) throw new Error('This extension predates extension reload. Reload it once in chrome://extensions (or restart Chrome); later updates can use extension reload.');
+      throw new Error(message);
+    }
+    const after = await reconnected;
+    return { reloaded: true, before, ...extensionInfo(after) };
+  }
   // SSH reverse forwards may use a different loopback port on the remote host.
   const localHost = req => /^127\.0\.0\.1(?::([1-9][0-9]{0,4}))?$/.test(req.headers.host || '') && Number((req.headers.host || '').split(':')[1] || 80) <= 65535;
   const metadata = browser => ({ id: browser.id, name: browser.name || null, connected: true });
@@ -105,6 +142,8 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
       try { browser = select(command.browser); }
       catch (error) { return reply(res, 503, { error: error.message }); }
       if (command.method === 'browser.info') return reply(res, 200, { result: metadata(browser) });
+      if (command.method === 'extension.info') return reply(res, 200, { result: extensionInfo(browser) });
+      if (command.method === 'extension.reload') return reply(res, 200, { result: await reloadExtension(browser) });
       if (command.method === 'browser.rename') {
         browser.name = await names.rename(browser.id, command.params.name);
         browser.ws.send(JSON.stringify({ type: 'browser', browser: metadata(browser) }));
@@ -141,14 +180,17 @@ export function createBridge({ port = 19333, timeout = 30000, onDiagnostic = () 
             if (typeof id !== 'string' || !/^[a-z0-9:_-]{1,128}$/i.test(id)) return ws.close(1008, 'Invalid browser ID');
             if (browsers.has(id)) return ws.close(1008, 'This browser is already connected');
             initializing = true;
+            const extension = await describeExtension(message);
             let name = await names.get(id);
             if (!name && id !== legacyId && !browsers.has(legacyId) && await names.get(legacyId)) name = await names.migrate(legacyId, id);
             if (ws.readyState !== WebSocket.OPEN) return;
             if (browsers.has(id)) return ws.close(1008, 'This browser is already connected');
-            browser = { ws, id, name, origin };
+            browser = { ws, id, name, origin, extension };
             browsers.set(id, browser);
             clearTimeout(helloTimer);
-            onDiagnostic({ event: 'connected', browser: metadata(browser) });
+            onDiagnostic({ event: 'connected', browser: metadata(browser), extension });
+            if (extension.current === false) onDiagnostic({ event: 'extension_mismatch', browser: metadata(browser), extension, bridge: bridgeInfo });
+            for (const done of reconnects.get(id) || []) done(browser);
             ws.send(JSON.stringify({ type: 'ready', browser: metadata(browser) })); return;
           }
           if (message.type === 'ping') { ws.send(JSON.stringify({ type: 'pong' })); return; }

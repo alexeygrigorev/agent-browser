@@ -31,6 +31,19 @@ No popup interaction is needed for normal use. Browser commands wait up to 35 se
 
 If updating an older unpacked extension, reload it once in `chrome://extensions` to refresh its popup and service worker. No pairing token is needed.
 
+### Updating the extension
+
+After pulling new extension code, reload it from the command line instead of visiting `chrome://extensions`:
+
+```sh
+node bin/cli.js --browser orin extension          # version, code hash, and whether it matches this checkout
+node bin/cli.js --browser orin extension reload   # reload from disk, wait for reconnect, report the new hash
+```
+
+On connect, the extension sends its manifest version and a SHA-256 hash of its source files (CRLF normalized, so Windows and POSIX checkouts agree). The bridge hashes the same files in its own `extension` directory. `extension` prints both: `extension.current` is `true` when the code running in Chrome matches the checkout, which tells you which code is live. `bridge.git` is the commit the bridge process started from; `bridge.restartNeeded` means the checkout has moved since then and the bridge itself should be restarted. `serve` logs a warning when a connecting extension does not match.
+
+`extension reload` calls `chrome.runtime.reload()`, then waits up to 25 seconds for the reloaded worker to reconnect. Chrome keeps an unpacked extension enabled across a reload only while **Developer mode** is on, which it already is after **Load unpacked**. Extensions older than this command report `Unknown method`, so they need one last manual reload, or a Chrome restart.
+
 ## Browser nicknames
 
 Give your connected Chrome profile a memorable name, then select it explicitly in agent commands:
@@ -105,7 +118,7 @@ node bin/cli.js --browser main mouse move 123 400 300
 node bin/cli.js --browser main mouse up 123
 ```
 
-Every click moves the pointer to the target first, so hover state is in place before the press. `mouse down` and `mouse up` default to the last pointer position in that tab and accept `--button left|right|middle`; moves while a button is held report it as a drag. The generic and MCP forms are `page.click`, `page.hover`, and `page.mouse`. After pulling these commands, reload the unpacked extension once in `chrome://extensions` so the browser side knows `page.hover` and `page.mouse`.
+Every click moves the pointer to the target first, so hover state is in place before the press. `mouse down` and `mouse up` default to the last pointer position in that tab and accept `--button left|right|middle`; moves while a button is held report it as a drag. The generic and MCP forms are `page.click`, `page.hover`, and `page.mouse`. After pulling these commands, run `extension reload` (or, for an extension older than that command, reload it once in `chrome://extensions`) so the browser side knows `page.hover` and `page.mouse`. `Unknown method: page.hover` always comes from an outdated extension: the bridge forwards page methods unchanged.
 
 ## Screenshots and video
 
@@ -206,6 +219,8 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `browser.info` | `{}`; returns browser ID, nickname, and connection state |
 | `browser.rename` | `name`; assigns a persistent nickname |
 | `browsers.list` | `{}`; lists connected profiles and saved offline aliases |
+| `extension.info` | `{}`; extension version and code hash, the hash of this bridge's `extension` directory, `current`, and the bridge's commit |
+| `extension.reload` | `{}`; reloads the unpacked extension from disk and returns after it reconnects, with `before` and the new `extension` |
 | `tabs.list` | `{}` |
 | `tabs.create` | `url?`, `active?` |
 | `tabs.close` | `tabId` |
