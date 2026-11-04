@@ -6,7 +6,7 @@
 // Usage: node src/teach-recorder.js <bundle-dir>   (reads recorder.json there)
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,12 @@ export async function record(dir, { now = Date.now, spawnImpl = spawn, capture =
   const config = JSON.parse(await readFile(join(dir, 'recorder.json'), 'utf8'));
   const { t0 } = config;
   const status = { state: 'starting', pid: process.pid, audio: { status: 'off' }, screen: { status: 'off' }, hooks: { status: 'off' } };
-  const save = () => writeFile(join(dir, 'desktop.json'), JSON.stringify(status, null, 2) + '\n');
+  // Status readers poll concurrently; never expose a truncated JSON document.
+  const save = async () => {
+    const temp = join(dir, `desktop.${process.pid}.tmp`);
+    await writeFile(temp, JSON.stringify(status, null, 2) + '\n');
+    await rename(temp, join(dir, 'desktop.json'));
+  };
   let writes = Promise.resolve();
   let seq = 0;
   const log = event => {

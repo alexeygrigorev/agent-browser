@@ -63,6 +63,7 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   teach stop [--no-sync]   Stop, transcribe, build timeline.md, sync the bundle
   teach status | teach process <id>  Show the session, or rebuild a bundle
   tunnel <ssh-host> [--remote-port <port>]  Forward this bridge to a remote host
+  remote add|list|connect|publish|check  Configure authenticated SSH relay access
   call <method> [JSON]     Send a browser command (params default to {})
   call <method> --stdin    Read JSON params from standard input
   call <method> --params-file <path>  Read UTF-8 JSON params from a file
@@ -70,25 +71,34 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
 
 call and mcp start the local bridge automatically when needed.
 
-Global: --no-autostart (use an existing bridge or SSH tunnel only)
+Global: --no-autostart (use an existing bridge or SSH tunnel only), --remote NAME
 Environment: AGENT_BROWSER_PORT (default 19333), AGENT_BROWSER_NAME, AGENT_BROWSER_AUTOSTART=0
 Example: agent-browser-bridge --browser main call tabs.list`;
 
 async function main() {
   const argv = process.argv.slice(2);
   let browser;
+  let remote;
   let autoStart = process.env.AGENT_BROWSER_AUTOSTART !== '0';
-  while (['--browser', '--no-autostart'].includes(argv[0])) {
+  while (['--browser', '--no-autostart', '--remote'].includes(argv[0])) {
     if (argv[0] === '--no-autostart') { autoStart = false; argv.shift(); continue; }
+    if (argv[0] === '--remote') { remote = argv[1]; if (!remote || remote.startsWith('--')) throw new Error('Expected remote name'); argv.splice(0, 2); continue; }
     browser = argv[1];
     if (!browser || browser.startsWith('--')) throw new Error('Usage: --browser <nickname-or-id> <command>');
     argv.splice(0, 2);
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'remote', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
-  const port = getPort();
+  let port = getPort(), token;
+  if (command === 'remote') { const { remoteCommand } = await import('../src/remote.js'); await remoteCommand(args); return; }
+  if (remote) {
+    if (['serve', 'tunnel', 'teach'].includes(command)) throw new Error('This command requires a local bridge');
+    const { getProfile, readToken } = await import('../src/remote.js');
+    const profile = await getProfile(remote);
+    port = profile.port; token = await readToken(profile.tokenFile); autoStart = false;
+  }
   if (command === 'serve') {
     const bridge = createBridge({ port, onDiagnostic: event => {
       console.error(`[browser-bridge] ${JSON.stringify(event)}`);
@@ -116,7 +126,7 @@ ${help}`);
   }
   if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach({ port, browser, autoStart }, args); return; }
   const active = command !== 'status';
-  const client = createClient({ port, browser, autoStart: active && autoStart, waitForConnection: active });
+  const client = createClient({ port, browser, token, autoStart: active && autoStart, waitForConnection: active });
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (command === 'browsers') { console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return; }

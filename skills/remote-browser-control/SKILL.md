@@ -5,6 +5,28 @@ description: Let an agent on Hetzner or another SSH host control existing signed
 
 Resolve the repository root as `../..` from this skill directory. Run commands there or supply an absolute `bin/cli.js` path. The desktop keeps Chrome and its unpacked extension; the remote host runs Node.js 22+ and this repository's CLI/MCP client. No remote browser or cookie export is needed.
 
+## Configured authenticated relay (preferred)
+
+If a saved remote profile exists (`node bin/cli.js remote list`), use it:
+
+```sh
+node bin/cli.js remote check desktop
+node bin/cli.js --remote desktop --browser main call tabs.list '{}'
+node bin/cli.js --remote desktop --browser orin mcp
+```
+
+`--remote NAME` reads the profile's port and private token file, authenticates
+commands and file transfers, and disables local bridge autostart. Never fall back
+to a local browser or an unauthenticated endpoint when remote access fails.
+The persistent desktop `remote publish NAME --reconnect` and agent-host
+`remote connect NAME --reconnect` processes must both be running. Inspect their
+service logs and restore the failed side. Do not display token files or private
+keys. The README documents setup, pinned host keys, forwarding-only SSH accounts,
+loopback ports, credential rotation and the trusted-relay boundary.
+
+The remaining examples describe legacy direct SSH forwarding; with a saved
+profile, replace `--no-autostart` with `--remote NAME` for every command.
+
 ## Desktop tunnel
 
 With dependencies and the Chrome extension installed, use the user's SSH host alias:

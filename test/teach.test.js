@@ -165,10 +165,20 @@ test('desktop recorder runs screen, microphone and hooks on the session clock un
 test('desktop recorder reports hooks that cannot start', async t => {
   const dir = await temp(t);
   await writeFile(join(dir, 'recorder.json'), JSON.stringify({ t0: 1, audio: null, screen: null, hooks: { python: 'py', script: 'hooks.py' } }));
-  const running = record(dir, { pollMs: 5, spawnImpl: fakeHooks({ before: [{ kind: 'hooks_error', error: 'pynput unavailable: No module named pynput' }] }) });
-  for (let i = 0; i < 200; i++) { await new Promise(resolve => setTimeout(resolve, 5)); if (JSON.parse(await readFile(join(dir, 'desktop.json'), 'utf8')).state === 'recording') break; }
+  const running = record(dir, { now: () => 1, pollMs: 5, spawnImpl: fakeHooks({ before: [{ kind: 'hooks_error', error: 'pynput unavailable: No module named pynput' }] }) });
+  let status;
+  for (let i = 0; i < 200; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const text = await readFile(join(dir, 'desktop.json'), 'utf8').catch(error => {
+      if (error.code === 'ENOENT') return '{}'; // Initial atomic publication is asynchronous.
+      throw error;
+    });
+    status = JSON.parse(text);
+    if (status.state === 'recording') break;
+  }
   await writeFile(join(dir, 'stop.request'), '');
   const final = await running;
+  assert.equal(status.state, 'recording');
   assert.deepEqual(final.hooks, { status: 'unavailable', reason: 'pynput unavailable: No module named pynput' });
 });
 

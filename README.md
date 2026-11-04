@@ -142,6 +142,55 @@ Use the recording ID returned by `record start`. Install FFmpeg on the computer 
 
 ## Agents on Hetzner or another SSH host
 
+### Saved, authenticated remote access
+
+For a dedicated relay, the desktop publishes an authenticated gateway over SSH;
+the agent connects a second SSH tunnel to that relay. Chrome and cookies stay on
+the desktop; the gateway credential is stored only on the desktop and agent host.
+The relay is trusted infrastructure: its administrator can inspect forwarded
+traffic. Both relay listeners bind to loopback.
+
+Create a random 32-byte base64url credential and store the same value in a private
+file on the desktop and agent host (mode 600 on Unix; user-only ACL on Windows).
+Use separate SSH keys and forwarding-only relay users for publishing and consuming.
+Pin the relay host key from a trusted provisioning channel before connecting.
+
+On the desktop:
+
+```sh
+node bin/cli.js remote add desktop --host publisher@relay --identity /private/publish-key --token-file /private/browser-token
+node bin/cli.js remote publish desktop --reconnect
+```
+
+On Hetzner:
+
+```sh
+node bin/cli.js remote add desktop --host consumer@relay --identity /private/consume-key --token-file /private/browser-token
+node bin/cli.js remote connect desktop --reconnect
+node bin/cli.js remote check desktop
+node bin/cli.js --remote desktop --browser main call tabs.list '{}'
+node bin/cli.js --remote desktop --browser orin mcp
+```
+
+`--remote` disables bridge autostart, loads the port and token from the named
+profile, and applies authentication to commands, uploads, and downloads. It never
+falls back to a local browser. `remote list` shows saved configuration without
+reading credential contents. Configuration lives at `~/.agent-browser/remotes.json`
+(override with `AGENT_BROWSER_REMOTE_CONFIG`). Defaults: client port 19335,
+relay port 19334, desktop gateway port 19334; `remote add` accepts `--port`,
+`--remote-port`, and `--gateway-port` overrides. `--reconnect` retries failed SSH
+connections; run under a service manager for restart after reboot.
+
+Harden the relay with no cloud service account, password/root login disabled,
+`GatewayPorts no`, no shell/PTY/agent/X11 forwarding for tunnel accounts, and
+per-user `AllowTcpForwarding remote`/`local`, `PermitListen 127.0.0.1:19334`, and
+`PermitOpen 127.0.0.1:19334` respectively. Restrict SSH ingress to the desktop and
+agent host addresses. The bearer credential grants control of all connected
+profiles: share it only with trusted agents, revoke by replacing both token files
+and restarting the publisher, and use the extension's Pause control to stop access.
+
+### Direct SSH forwarding
+
 Keep Chrome and the extension on your own computer. From that computer, open a reverse SSH tunnel to a host in your SSH configuration:
 
 ```sh
