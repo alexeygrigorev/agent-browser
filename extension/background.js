@@ -218,6 +218,27 @@ function targetAction({ selector, action, text, clear = true }) {
 // continuous mouse rather than isolated events.
 const pointers = new Map();
 const mouseButtons = { left: 1, right: 2, middle: 4, back: 8, forward: 16 };
+// A page overlay makes synthetic CDP input visible without intercepting it.
+function showAgentPointer({ x, y, pressed }) {
+  let host = document.querySelector('agent-browser-pointer');
+  if (!host) {
+    host = document.createElement('agent-browser-pointer');
+    host.setAttribute('aria-hidden', 'true');
+    host.style.cssText = 'all:initial!important;position:fixed!important;inset:0!important;pointer-events:none!important;z-index:2147483647!important';
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<style>:host,*{pointer-events:none!important}svg{position:absolute;overflow:visible;filter:drop-shadow(0 1px 2px #0008)}circle{fill:#2563eb33;stroke:#2563eb;stroke-width:3}path{fill:#2563eb;stroke:white;stroke-width:2}</style><svg width="30" height="36" aria-hidden="true"><circle cx="0" cy="0" r="16" style="display:none"/><path d="M0 0 L0 27 L7 20 L13 33 L19 30 L13 18 L24 18 Z"/></svg>';
+    document.documentElement.append(host);
+  }
+  const svg = host.shadowRoot.querySelector('svg');
+  svg.style.left = `${x}px`; svg.style.top = `${y}px`;
+  const ring = svg.querySelector('circle');
+  if (pressed) {
+    ring.style.display = '';
+    ring.getAnimations().forEach(animation => animation.cancel());
+    ring.animate([{ opacity: 1, r: '12px' }, { opacity: 0, r: '30px' }], { duration: 800, fill: 'forwards' });
+  }
+  return true;
+}
 async function point(tabId, params, action = 'point') {
   const target = params.selector ? await pageCall(tabId, targetAction, { selector: params.selector, action }) : params;
   if (!Number.isFinite(target.x) || !Number.isFinite(target.y)) throw new Error('Provide selector or x and y coordinates');
@@ -231,6 +252,8 @@ async function mouse(tabId, type, { x, y }, { button = 'left', clickCount = 1 } 
   if (type === 'mousePressed') buttons |= mouseButtons[button];
   if (type === 'mouseReleased') buttons &= ~mouseButtons[button];
   const held = Object.keys(mouseButtons).find(name => buttons & mouseButtons[name]);
+  // Cosmetic failures must never turn a completed click into a retryable error.
+  await pageCall(tabId, showAgentPointer, { x, y, pressed: type === 'mousePressed' }).catch(() => {});
   await cdp(tabId, 'Input.dispatchMouseEvent', { type, x, y, buttons, ...(type === 'mouseMoved' ? { button: held || 'none' } : { button, clickCount }) });
   pointers.set(tabId, { x, y, buttons });
   return { x, y };
