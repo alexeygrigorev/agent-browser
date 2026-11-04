@@ -145,8 +145,10 @@ Use the recording ID returned by `record start`. Install FFmpeg on the computer 
 ### Saved, authenticated remote access
 
 For a dedicated relay, the desktop publishes an authenticated gateway over SSH;
-the agent connects a second SSH tunnel to that relay. Chrome, cookies, and the
-gateway credential stay off the relay. Both relay listeners bind to loopback.
+the agent connects a second SSH tunnel to that relay. Chrome and cookies stay on
+the desktop; the gateway credential is stored only on the desktop and agent host.
+The relay is trusted infrastructure: its administrator can inspect forwarded
+traffic. Both relay listeners bind to loopback.
 
 Create a random 32-byte base64url credential and store the same value in a private
 file on the desktop and agent host (mode 600 on Unix; user-only ACL on Windows).

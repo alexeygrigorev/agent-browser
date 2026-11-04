@@ -12,7 +12,10 @@ export const configFile = () => process.env.AGENT_BROWSER_REMOTE_CONFIG || join(
 const namePattern = /^[a-z][a-z0-9_-]{0,31}$/;
 export function validateProfile(profile) {
   if (!profile || typeof profile !== 'object' || !/^[a-zA-Z0-9_][a-zA-Z0-9_.@-]*$/.test(profile.host || '')) throw new Error('Remote host must be an SSH alias or user@host');
-  for (const key of ['port', 'remotePort', 'gatewayPort']) getPort(profile[key]);
+  for (const key of ['port', 'remotePort', 'gatewayPort']) {
+    if (!Number.isInteger(profile[key])) throw new Error(`Remote ${key} must be an integer`);
+    getPort(profile[key]);
+  }
   if (typeof profile.tokenFile !== 'string' || !profile.tokenFile) throw new Error('Remote tokenFile is required');
   if (profile.identityFile !== undefined && (typeof profile.identityFile !== 'string' || !profile.identityFile)) throw new Error('Invalid SSH identityFile');
   return profile;
@@ -46,7 +49,7 @@ export async function readToken(file) {
 export function remoteSshArgs(profile, mode) {
   validateProfile(profile);
   if (!['connect', 'publish'].includes(mode)) throw new Error('Expected connect or publish');
-  return ['-N', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=20', '-o', 'ServerAliveCountMax=3', '-o', 'ConnectTimeout=10',
+  return ['-N', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'UpdateHostKeys=no', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=20', '-o', 'ServerAliveCountMax=3', '-o', 'ConnectTimeout=10',
     ...(profile.identityFile ? ['-i', profile.identityFile, '-o', 'IdentitiesOnly=yes'] : []),
     mode === 'publish' ? '-R' : '-L',
     mode === 'publish' ? `127.0.0.1:${profile.remotePort}:127.0.0.1:${profile.gatewayPort}` : `127.0.0.1:${profile.port}:127.0.0.1:${profile.remotePort}`, profile.host];
