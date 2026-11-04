@@ -12,13 +12,14 @@ export function getPort(value = process.env.AGENT_BROWSER_PORT || '19333') {
   return port;
 }
 
-export function createClient({ port = getPort(), timeout = 40000, autoStart = false, waitForConnection = autoStart, connectTimeout = 35000, launcher = launchBridge, browser = process.env.AGENT_BROWSER_NAME } = {}) {
+export function createClient({ port = getPort(), timeout = 40000, autoStart = false, waitForConnection = autoStart, connectTimeout = 35000, launcher = launchBridge, browser = process.env.AGENT_BROWSER_NAME, token } = {}) {
+  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
   async function request(path, body, requestTimeout = timeout) {
     let response;
     try {
       response = await fetch(`http://127.0.0.1:${port}${path}`, {
         method: body === undefined ? 'GET' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(requestTimeout)
       });
@@ -48,7 +49,7 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
     const query = new URLSearchParams({ name: basename(path) });
     if (selectedBrowser !== undefined) query.set('browser', selectedBrowser);
     const response = await fetch(`http://127.0.0.1:${port}/files?${query}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream', ...authHeaders },
       body: createReadStream(path), duplex: 'half', signal: AbortSignal.timeout(timeout)
     });
     const payload = await response.json();
@@ -100,7 +101,7 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
         await ensureReady(selectedBrowser);
         const query = new URLSearchParams();
         if (selectedBrowser !== undefined) query.set('browser', selectedBrowser);
-        const response = await fetch(`http://127.0.0.1:${port}/downloads/${id}/file${query.size ? `?${query}` : ''}`, { signal: AbortSignal.timeout(timeout) });
+        const response = await fetch(`http://127.0.0.1:${port}/downloads/${id}/file${query.size ? `?${query}` : ''}`, { headers: authHeaders, signal: AbortSignal.timeout(timeout) });
         if (!response.ok) {
           const payload = await response.json();
           throw new Error(typeof payload.error === 'string' ? payload.error : payload.error?.message || `Download HTTP ${response.status}`);
