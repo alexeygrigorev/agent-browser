@@ -79,13 +79,12 @@ node bin/cli.js --remote desktop --browser orin mcp
 ```
 
 Uploads stream files from the controlling machine and stage them on the desktop
-(up to 64 MiB each); submission is a separate authorized page action. Download
+(up to 64 MiB each); submission is a separate authorized page action.
 Only staged uploads are allowed remotely: never pass arbitrary desktop paths.
 Staging has a 512 MiB/128-file quota and 24-hour retention. Raw CDP, teaching,
 recording and extension reload are blocked remotely; page evaluation requires
 an explicit script grant. General Orin interaction remains enabled.
-Download
-metadata's absolute `filename` belongs to the desktop; `downloads save` writes a
+Download metadata's absolute `filename` belongs to the desktop; `downloads save` writes a
 new file on the controlling machine. Existing outputs are not overwritten.
 Screenshots save on the controlling machine. See README for all methods.
 

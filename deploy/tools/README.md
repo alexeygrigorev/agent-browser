@@ -41,3 +41,9 @@ grant browser credentials new tool permissions implicitly. No PocketShell
 runtime is deployed by this change.
 
 SSH is an infrastructure administration channel only. Browser traffic uses HTTPS/WSS.
+
+On Windows, run `node windows/run-daemon.mjs` from the hidden scheduled task.
+It captures daemon metadata without PowerShell error wrappers, rotates the
+private log at 2 MiB and retains three previous files. Bound gateway journald
+storage to 100 MiB/14 days using a journald drop-in; the service also limits
+log rate to 120 messages per minute.
