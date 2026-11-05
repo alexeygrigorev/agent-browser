@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { createToolsServer } from '../src/tools/server.js';
 import { hash, secret } from '../src/tools/auth.js';
+import { ensureIdentity } from '../src/tools/identity.js';
 
 const dir = await mkdtemp(join(tmpdir(), 'tools-browser-'));
 let tools, browser, proxy;
@@ -23,7 +24,8 @@ try {
   tools = await createToolsServer({ file: join(dir, 'state.json'), origin, clientId: 'synthetic-client' }); upstreamPort = (await tools.listen(0)).port;
   const token = secret(); const csrf = secret();
   tools.auth.state.sessions[hash(token)] = { owner: 'synthetic-user', email: 'synthetic@datatalks.club', csrf, expires: Date.now() + 600000 };
-  const start = await fetch(`http://127.0.0.1:${upstreamPort}/api/auth/device`, { method: 'POST', body: JSON.stringify({ role: 'controller', label: 'Synthetic browser CLI' }) });
+  const identity = await ensureIdentity(join(dir, 'controller-identity.json'));
+  const start = await fetch(`http://127.0.0.1:${upstreamPort}/api/auth/device`, { method: 'POST', body: JSON.stringify({ role: 'controller', certificate: identity.certificate, label: 'Synthetic browser CLI' }) });
   const grant = await start.json();
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });

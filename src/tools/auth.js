@@ -1,4 +1,4 @@
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, X509Certificate } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
@@ -24,7 +24,7 @@ export function page(res, title, body) {
   res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)} · DTC Tools</title><style>body{font:17px/1.55 system-ui;color:#18332e;background:#f3f4ef;max-width:720px;margin:8vh auto;padding:24px}main{background:white;border:1px solid #ccd5ce;padding:36px;border-radius:12px}h1{font-size:30px;line-height:1.2}a{color:#126347}button{font:inherit;padding:10px 20px;background:#126347;color:white;border:0;border-radius:5px;cursor:pointer}button[name=deny]{background:#6b3838}input{font:inherit;padding:9px;max-width:90%}code{font-size:22px}small{color:#52645b}</style><main><small>DataTalks.Club · Tools</small><h1>${escape(title)}</h1>${body}</main></html>`);
 }
 
-export async function createAuth({ file, origin, clientId, issuer = 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_H7nJu52Bs', authBase = 'https://auth.dtcdev.click', verifyIdentity, now = Date.now }) {
+export async function createAuth({ file, origin, clientId, issuer = 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_H7nJu52Bs', authBase = 'https://auth.dtcdev.click', verifyIdentity, now = Date.now, audit = () => {} }) {
   if (!clientId || !file || new URL(origin).protocol !== 'https:') throw new Error('Tools server requires HTTPS origin, client ID and private state file');
   const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
   const verify = verifyIdentity || (async (token, nonce) => {
@@ -34,6 +34,8 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
   });
   let state;
   try { state = JSON.parse(await readFile(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; state = { sessions: {}, credentials: {}, devices: {}, transactions: {} }; }
+  state.grants ||= {}; state.proofs ||= {};
+  for (const [id, item] of Object.entries(state.credentials)) if (item.role === 'controller' && !item.grantId) delete state.credentials[id];
   let queue = Promise.resolve();
   function save() {
     queue = queue.catch(() => {}).then(async () => {
@@ -49,7 +51,7 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
   function credential(req) {
     const raw = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '')?.[1];
     const item = raw && state.credentials[hash(raw)];
-    return item && item.expires > now() ? { ...item, key: hash(raw) } : null;
+    return item && item.expires > now() && (item.role !== 'controller' || item.grantId && state.grants[item.grantId]?.expires > now()) ? { ...item, key: hash(raw) } : null;
   }
   function session(req) {
     const raw = cookieValue(req, '__Host-tools-session');
@@ -62,6 +64,11 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
     return item;
   }
   function csrf(req, s, value) { if (req.headers.origin !== origin || value !== s.csrf) throw fail(403, 'Invalid approval request'); }
+  function revoke(key, onRevoke) {
+    const parent = state.credentials[key]?.grantId || key;
+    delete state.grants[parent]; delete state.credentials[key]; onRevoke(key);
+    for (const [id, c] of Object.entries(state.credentials)) if (c.grantId === parent) { delete state.credentials[id]; onRevoke(id); }
+  }
   const rates = new Map();
   function rate(req, limit = 30, kind = 'start') {
     const ip = `${kind}:${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`;
@@ -107,8 +114,12 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
       rate(req); prune(); if (Object.keys(state.devices).length > 1000) throw fail(429, 'Too many pending logins');
       const body = await jsonBody(req); const role = body.role || 'controller';
       if (!['controller', 'daemon'].includes(role) || role === 'daemon' && !deviceName(body.device)) throw fail(400, 'Expected controller or daemon with a device name');
+      if (role === 'controller') {
+        try { if (typeof body.certificate !== 'string' || body.certificate.length > 8192 || new X509Certificate(body.certificate).publicKey.asymmetricKeyType !== 'ec') throw new Error(); }
+        catch { throw fail(400, 'Controller TLS identity certificate required'); }
+      }
       const raw = secret(), userCode = randomBytes(4).toString('hex').toUpperCase().replace(/(.{4})/, '$1-');
-      state.devices[hash(raw)] = { userCode, label: String(body.label || 'Browser CLI').slice(0, 100), role, device: role === 'daemon' ? body.device : null, interval: 5, nextPoll: 0, expires: now() + 600000 };
+      state.devices[hash(raw)] = { userCode, label: String(body.label || 'Browser CLI').slice(0, 100), role, certificate: role === 'controller' ? body.certificate : undefined, device: role === 'daemon' ? body.device : null, interval: 5, nextPoll: 0, expires: now() + 600000 };
       await save(); json(res, 200, { device_code: raw, user_code: userCode, verification_uri: `${origin}/device`, verification_uri_complete: `${origin}/device?code=${userCode}`, expires_in: 600, interval: 5 }); return true;
     }
     if (req.method === 'POST' && path === '/api/auth/device/token') {
@@ -120,16 +131,33 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
       if (d.nextPoll > now()) { d.interval = Math.min(30, d.interval + 5); d.nextPoll = now() + d.interval * 1000; json(res, 400, { error: 'slow_down' }); return true; }
       d.nextPoll = now() + d.interval * 1000;
       if (!d.owner) { json(res, 400, { error: 'authorization_pending' }); return true; }
-      const token = secret(); const item = { owner: d.owner, email: d.email, role: d.role, device: d.device, label: d.label, tools: ['browser'], expires: now() + 30 * 86400000 };
+      const token = secret(); const item = { owner: d.owner, email: d.email, role: d.role, device: d.device, label: d.label, tools: ['browser'], certificate: d.certificate, expires: now() + (d.role === 'controller' ? 900000 : 30 * 86400000) };
+      let refresh;
+      if (d.role === 'controller') { refresh = secret(); item.grantId = hash(refresh); state.grants[item.grantId] = { ...item, expires: now() + 30 * 86400000 }; }
       delete state.devices[key]; state.credentials[hash(token)] = item; await save();
-      json(res, 200, { access_token: token, token_type: 'Bearer', expires_in: 30 * 86400, ...item }); return true;
+      audit('credential_issued', { owner: item.owner, role: item.role, device: item.device });
+      json(res, 200, { access_token: token, refresh_token: refresh, token_type: 'Bearer', expires_in: d.role === 'controller' ? 900 : 30 * 86400, ...item }); return true;
+    }
+    if (req.method === 'POST' && path === '/api/auth/refresh') {
+      rate(req, 120, 'refresh'); prune(); const body = await jsonBody(req); const grantId = hash(String(body.refresh_token || '')); const grant = state.grants[grantId];
+      if (!grant || grant.expires <= now()) throw fail(401, 'Device grant expired or revoked');
+      let proof;
+      try {
+        ({ payload: proof } = await jwtVerify(String(req.headers.dpop || ''), new X509Certificate(grant.certificate).publicKey, { algorithms: ['ES256'], typ: 'dpop+jwt', maxTokenAge: '60s', currentDate: new Date(now()), requiredClaims: ['iat', 'jti'] }));
+        if (proof.htm !== 'POST' || proof.htu !== `${origin}/api/auth/refresh` || proof.grant_hash !== grantId || typeof proof.jti !== 'string' || proof.jti.length > 100 || state.proofs[hash(proof.jti)] || Math.abs(now() / 1000 - proof.iat) > 60) throw new Error();
+      } catch { throw fail(401, 'Invalid or replayed device proof'); }
+      state.proofs[hash(proof.jti)] = { expires: now() + 120000 };
+      const token = secret(); const item = { ...grant, grantId, expires: now() + 900000 }; state.credentials[hash(token)] = item; await save();
+      audit('credential_renewed', { owner: item.owner, role: item.role });
+      json(res, 200, { access_token: token, token_type: 'Bearer', expires_in: 900, ...item }); return true;
     }
     if (req.method === 'GET' && path === '/device') {
       const code = (url.searchParams.get('code') || '').toUpperCase(); const s = session(req);
       if (!s) { res.writeHead(303, { location: `/auth/login?code=${encodeURIComponent(code)}` }); res.end(); return true; }
       const d = Object.values(state.devices).find(d => d.userCode === code && d.expires > now() && !d.denied && !d.owner);
       if (!d) { page(res, 'Connect a CLI', '<form method="get" action="/device"><label>Device code <input name="code" required placeholder="ABCD-1234"></label> <button>Continue</button></form><p>Only enter a code from a login you started.</p>'); return true; }
-      page(res, 'Approve browser access', `<p>Signed in as <strong>${escape(s.email)}</strong>.</p><p>Code: <code>${escape(code)}</code></p><p>${escape(d.label)} requests <strong>${d.role === 'daemon' ? `permission to publish browser device ${escape(d.device)}` : 'control of your connected browser devices'}</strong>.</p><p>Approve only if you started this login. It grants access for 30 days, until expiry or revocation.</p><form method="post" action="/api/auth/device/approve"><input type="hidden" name="code" value="${escape(code)}"><input type="hidden" name="csrf" value="${escape(s.csrf)}"><button name="approve" value="yes">Approve</button> <button name="deny" value="yes">Deny</button></form>`); return true;
+      const pin = d.certificate ? new X509Certificate(d.certificate).fingerprint256.replaceAll(':', '').toLowerCase() : null;
+      page(res, 'Approve browser access', `<p>Signed in as <strong>${escape(s.email)}</strong>.</p><p>Code: <code>${escape(code)}</code></p><p>${escape(d.label)} requests <strong>${d.role === 'daemon' ? `permission to publish browser device ${escape(d.device)}` : 'control of your connected browser devices'}</strong>.</p>${pin ? `<p>Controller identity: <small style="overflow-wrap:anywhere">${pin}</small></p>` : ''}<p>Approve only if you started this login. Controller access tokens last 15 minutes and renew with the device key for up to 30 days. Desktop pairing independently limits browser permissions.</p><form method="post" action="/api/auth/device/approve"><input type="hidden" name="code" value="${escape(code)}"><input type="hidden" name="csrf" value="${escape(s.csrf)}"><button name="approve" value="yes">Approve</button> <button name="deny" value="yes">Deny</button></form>`); return true;
     }
     if (req.method === 'POST' && path === '/api/auth/device/approve') {
       const s = session(req); if (!s) throw fail(401, 'Browser sign-in required');
@@ -142,10 +170,10 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
     }
     if (req.method === 'GET' && path === '/api/auth/me') { const p = credential(req) || session(req); if (!p) throw fail(401, 'Not signed in'); json(res, 200, { email: p.email, role: p.role || 'browser', device: p.device, expires: p.expires }); return true; }
     if (req.method === 'POST' && path === '/api/auth/logout') {
-      const p = credential(req); if (!p) throw fail(401, 'Not signed in'); delete state.credentials[p.key]; await save(); onRevoke(p.key); json(res, 200, { revoked: true }); return true;
+      const p = credential(req); if (!p) throw fail(401, 'Not signed in'); revoke(p.key, onRevoke); await save(); json(res, 200, { revoked: true }); return true;
     }
     if (req.method === 'GET' && path === '/api/auth/credentials') {
-      const s = session(req); if (!s) throw fail(401, 'Browser sign-in required'); json(res, 200, Object.entries(state.credentials).filter(([, c]) => c.owner === s.owner).map(([id, c]) => ({ id, label: c.label, role: c.role, device: c.device, expires: c.expires }))); return true;
+      const s = session(req); if (!s) throw fail(401, 'Browser sign-in required'); json(res, 200, [...Object.entries(state.credentials).filter(([, c]) => !c.grantId), ...Object.entries(state.grants)].filter(([, c]) => c.owner === s.owner).map(([id, c]) => ({ id, label: c.label, role: c.role, device: c.device, expires: c.expires }))); return true;
     }
     if (req.method === 'POST' && ['/api/auth/revoke', '/auth/revoke'].includes(path)) {
       const s = session(req); if (!s) throw fail(401, 'Browser sign-in required');
@@ -155,7 +183,7 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
         b = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
       } else b = await jsonBody(req);
       csrf(req, s, b.csrf);
-      const c = state.credentials[b.id]; if (!c || c.owner !== s.owner) throw fail(404, 'Credential not found'); delete state.credentials[b.id]; await save(); onRevoke(b.id);
+      const c = state.grants[b.id] || state.credentials[b.id]; if (!c || c.owner !== s.owner) throw fail(404, 'Credential not found'); revoke(b.id, onRevoke); await save();
       if (path === '/auth/revoke') { res.writeHead(303, { location: '/browser' }); res.end(); } else json(res, 200, { revoked: true }); return true;
     }
     throw fail(404, 'Not found');

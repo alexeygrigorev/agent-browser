@@ -2,7 +2,7 @@
 
 <img src="extension/icons/icon-128.png" alt="Agent Browser Bridge robot cursor icon" width="72">
 
-Control your existing, signed-in Chrome from any agent that can run a shell command or connect to an MCP server. Install the unpacked extension in the Chrome profile you already use. It connects automatically to a local service and controls that profile's existing tabs with their existing cookies and logins. No token or pairing step is required. You do not need a separate browser, a remote debugging launch flag, or to export cookies.
+Control your existing, signed-in Chrome from any agent that can run a shell command or connect to an MCP server. Install the unpacked extension in the Chrome profile you already use. It connects automatically to a local service and controls that profile's existing tabs with their existing cookies and logins. Local access needs no token or pairing; remote access requires device login and independent certificate pairing. You do not need a separate browser, a remote debugging launch flag, or to export cookies.
 
 Control multiple Chrome profiles through one bridge, select them by nickname, upload files, retrieve downloads, take screenshots, and record silent video. Agents on another machine can use the same browsers through the authenticated HTTPS gateway.
 
@@ -162,19 +162,25 @@ On a controlling machine:
 node bin/cli.js auth login --device desktop
 node bin/cli.js auth status
 node bin/cli.js --remote desktop --browser orin call tabs.list '{}'
-node bin/cli.js --remote desktop --browser main mcp
+node bin/cli.js --remote desktop --browser orin mcp
 ```
 
 `auth login` prints a verification link and code. Open the link, sign in through
 the existing shared Google/Cognito login and approve the displayed request.
-Credentials are unique to the machine and role, stored privately with a 30-day
-expiry, and revocable from the browser portal or using `auth logout` (add
+Controller access lasts 15 minutes and renews using a device-key-bound 30-day
+grant. Daemon publication credentials last 30 days. Credentials are stored
+privately and revocable from the browser portal or using `auth logout` (add
 `--daemon` for the daemon credential). `remote check desktop` verifies browser
 connectivity. A paused/offline desktop fails rather than falling back to another
 browser. Uploads and downloads stream through the same authenticated connection.
 The daemon can publish only its named device; controllers can access only
-devices owned by their signed-in identity. The gateway terminates TLS and is
-trusted to relay browser data; cookies and Chrome profiles remain on the desktop.
+devices owned by their signed-in identity. Before browser access, independently
+pair public certificates as described in [remote security](docs/remote-security.md).
+Inner mutual TLS 1.3 protects browser traffic from the gateway. Desktop-local
+grants restrict profiles and capabilities: Orin supports general interaction
+and staged uploads; main needs a separate grant. Raw CDP and arbitrary desktop
+file uploads are denied; page evaluation needs a separate script capability.
+Cookies and Chrome profiles remain on the desktop.
 
 The shared login loop is vendored unchanged from DataTalksClub/auth; see
 `vendor/README.md` for its source commit. Gateway deployment and the common

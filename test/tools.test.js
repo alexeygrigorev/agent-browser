@@ -5,12 +5,13 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { generateKeyPair, exportJWK, SignJWT } from 'jose';
+import { generateKeyPair, exportJWK, SignJWT, importPKCS8 } from 'jose';
 import { WebSocket } from 'ws';
 import { createToolsServer } from '../src/tools/server.js';
-import { connectDaemon } from '../src/tools/daemon.js';
+import { ensureIdentity } from '../src/tools/identity.js';
 import { createClient } from '../src/client.js';
 import { serverUrl } from '../src/tools/cli.js';
+import { hash, secret } from '../src/tools/auth.js';
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const close = server => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); };
@@ -18,6 +19,7 @@ const cookie = response => response.headers.getSetCookie().map(c => c.split(';')
 
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'browser-tools-')); let time = Date.now(); let nonce, identity = { sub: 'person-a', email: 'a@datatalks.club', email_verified: true, token_use: 'id' };
+  const controllerIdentity = await ensureIdentity(join(dir, 'controller-key.json'));
   const { privateKey, publicKey } = await generateKeyPair('RS256'); const jwk = await exportJWK(publicKey); jwk.kid = 'test';
   let issuer;
   const oidc = http.createServer(async (req, res) => {
@@ -27,7 +29,7 @@ async function fixture(t) {
     res.end(JSON.stringify({ id_token: token }));
   });
   issuer = `http://127.0.0.1:${await listen(oidc)}`;
-  const tools = await createToolsServer({ file: join(dir, 'state.json'), origin: 'https://tools.example', clientId: 'tools-client', issuer, authBase: issuer, now: () => time });
+  const tools = await createToolsServer({ file: join(dir, 'state.json'), origin: 'https://tools.example', clientId: 'tools-client', issuer, authBase: issuer, now: () => time, onAudit: () => {} });
   const base = `http://127.0.0.1:${(await tools.listen(0)).port}`;
   const sockets = [];
   t.after(async () => { for (const s of sockets) s.terminate(); await tools.close(); await close(oidc); await rm(dir, { recursive: true, force: true }); });
@@ -40,7 +42,7 @@ async function fixture(t) {
     return { cookie: cookie(response), response, callback, binding: cookie(start) };
   }
   async function start(role = 'controller', device = 'desktop') {
-    const r = await fetch(base + '/api/auth/device', { method: 'POST', body: JSON.stringify({ role, device, label: '<test label>' }) }); assert.equal(r.status, 200); return r.json();
+    const r = await fetch(base + '/api/auth/device', { method: 'POST', body: JSON.stringify({ role, device, certificate: controllerIdentity.certificate, label: '<test label>' }) }); assert.equal(r.status, 200); return r.json();
   }
   async function approve(grant, session, approve = true, badOrigin = false) {
     const preview = await (await fetch(base + `/device?code=${grant.user_code}`, { headers: { Cookie: session }, redirect: 'manual' })).text();
@@ -54,7 +56,7 @@ async function fixture(t) {
   async function credential(role = 'controller', session) {
     const s = session || (await browserLogin()).cookie; const grant = await start(role); assert.equal((await approve(grant, s)).status, 200); return (await poll(grant)).body;
   }
-  return { dir, tools, base, browserLogin, start, approve, poll, credential, sockets, advance: ms => { time += ms; } };
+  return { dir, tools, base, browserLogin, start, approve, poll, credential, sockets, controllerIdentity, time: () => time, advance: ms => { time += ms; } };
 }
 
 test('shared browser SSO checks signed identity, transaction binding, nonce and domain', async t => {
@@ -85,34 +87,39 @@ test('device grants require browser approval, resist CSRF, slow polls, expire, d
   assert.ok(!(await readFile(join(f.dir, 'state.json'), 'utf8')).includes(result.body.access_token), 'bearer tokens are stored as hashes');
 });
 
-test('authenticated daemon streams commands/files; roles, ownership and revocation fail closed', async t => {
+test('short-lived controller tokens renew only with their device key; replay and revoked grants fail', async t => {
+  const f = await fixture(t); const c = await f.credential(); assert.equal(c.expires_in, 900);
+  const key = await importPKCS8(f.controllerIdentity.key, 'ES256');
+  const proof = await new SignJWT({ htm: 'POST', htu: 'https://tools.example/api/auth/refresh', grant_hash: hash(c.refresh_token), jti: secret() }).setProtectedHeader({ alg: 'ES256', typ: 'dpop+jwt' }).setIssuedAt(Math.floor(f.time() / 1000)).sign(key);
+  const refresh = async p => { const r = await fetch(f.base + '/api/auth/refresh', { method: 'POST', headers: { DPoP: p }, body: JSON.stringify({ refresh_token: c.refresh_token }) }); return { status: r.status, body: await r.json() }; };
+  assert.equal((await refresh('')).status, 401);
+  const renewed = await refresh(proof); assert.equal(renewed.status, 200); assert.equal(renewed.body.expires_in, 900);
+  assert.equal((await refresh(proof)).status, 401);
+  await fetch(f.base + '/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${renewed.body.access_token}` } });
+  assert.equal((await refresh(proof)).status, 401);
+  assert.equal((await fetch(f.base + '/api/auth/me', { headers: { Authorization: `Bearer ${c.access_token}` } })).status, 401);
+});
+
+test('gateway authenticates roles and owners; plaintext browser routes remain disabled', async t => {
   const f = await fixture(t); const a = (await f.browserLogin()).cookie;
   const controller = await f.credential('controller', a); const publisher = await f.credential('daemon', a);
-  const payload = Buffer.alloc(1024 * 1024, 120); let uploaded;
-  const bridge = http.createServer(async (req, res) => {
-    const chunks = []; for await (const chunk of req) chunks.push(chunk);
-    if (req.url.startsWith('/files')) { uploaded = Buffer.concat(chunks); res.end(JSON.stringify({ path: '/staged/fixture' })); }
-    else if (req.url.startsWith('/downloads/7/file')) res.end(payload);
-    else if (req.url === '/status') res.end(JSON.stringify({ connected: true }));
-    else { const body = JSON.parse(Buffer.concat(chunks).toString()); res.end(JSON.stringify({ result: body.method === 'browsers.list' ? ['main', 'orin'] : { executed: body.params } })); }
-  });
-  const bridgePort = await listen(bridge); t.after(() => close(bridge));
-  let daemon; await new Promise(resolve => { daemon = connectDaemon({ server: f.base, token: publisher.access_token, bridgePort, onReady: resolve }); f.sockets.push(daemon); });
-  const baseUrl = f.base + '/browser/desktop'; const client = createClient({ baseUrl, token: controller.access_token });
-  assert.deepEqual(await client.call('browsers.list'), ['main', 'orin']); assert.deepEqual(await client.call('page.click', { tabId: 5, x: 20, y: 30 }), { executed: { tabId: 5, x: 20, y: 30 } });
-  const input = join(f.dir, 'upload.txt'); await writeFile(input, payload); await client.stageFile(input); assert.deepEqual(uploaded, payload);
-  const output = join(f.dir, 'download.txt'); await client.saveDownload(7, output); assert.deepEqual(await readFile(output), payload);
+  const wsUrl = f.base.replace('http:', 'ws:');
+  const daemon = new WebSocket(wsUrl + '/browser/daemon', { headers: { Authorization: `Bearer ${publisher.access_token}` } }); f.sockets.push(daemon);
+  await once(daemon, 'message');
+  const baseUrl = f.base + '/browser/desktop';
   assert.equal((await fetch(baseUrl + '/status')).status, 401);
   assert.equal((await fetch(baseUrl + '/status', { headers: { Authorization: `Bearer ${publisher.access_token}` } })).status, 401);
+  assert.equal((await fetch(baseUrl + '/status', { headers: { Authorization: `Bearer ${controller.access_token}` } })).status, 404);
+  async function rejectSocket(token, route, status) {
+    const ws = new WebSocket(wsUrl + route, { headers: { Authorization: `Bearer ${token}` } }); f.sockets.push(ws);
+    const [error] = await once(ws, 'error'); assert.match(error.message, new RegExp(String(status)));
+  }
   const b = (await f.browserLogin({ sub: 'person-b', email: 'b@datatalks.club' })).cookie; const other = await f.credential('controller', b);
-  assert.equal((await fetch(baseUrl + '/status', { headers: { Authorization: `Bearer ${other.access_token}` } })).status, 503);
-  const badWs = new WebSocket(f.base.replace('http:', 'ws:') + '/browser/daemon', { headers: { Authorization: `Bearer ${controller.access_token}` } }); f.sockets.push(badWs);
-  await once(badWs, 'error');
-  const closed = once(daemon, 'close');
-  await fetch(f.base + '/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${publisher.access_token}` } }); await closed;
-  assert.equal((await fetch(baseUrl + '/status', { headers: { Authorization: `Bearer ${controller.access_token}` } })).status, 503);
-  await fetch(f.base + '/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${controller.access_token}` } });
-  assert.equal((await fetch(baseUrl + '/status', { headers: { Authorization: `Bearer ${controller.access_token}` } })).status, 401);
+  await rejectSocket(other.access_token, '/browser/desktop/tunnel', 503);
+  await rejectSocket(controller.access_token, '/browser/daemon', 401);
+  await rejectSocket(publisher.access_token, '/browser/desktop/tunnel', 401);
+  const closed = once(daemon, 'close'); await fetch(f.base + '/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${publisher.access_token}` } }); await closed;
+  await rejectSocket(controller.access_token, '/browser/desktop/tunnel', 503);
   assert.throws(() => createClient({ baseUrl, autoStart: true }), /cannot autostart/);
   assert.throws(() => serverUrl('http://tools.example'), /HTTPS/);
 });

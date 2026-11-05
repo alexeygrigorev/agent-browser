@@ -64,6 +64,10 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   teach status | teach process <id>  Show the session, or rebuild a bundle
   remote list|check NAME    Inspect device-authenticated remote browser access
   auth login|status|logout [--daemon]  Sign in using the shared DTC device flow
+  auth identity [--daemon] [--output PATH]  Export this machine's public pairing certificate
+  auth pair --certificate-file PATH  Pin the desktop's independently verified certificate
+  daemon trust --certificate-file PATH [--profiles orin] [--mode inspect|interact|script] [--origins ORIGINS]
+  daemon untrust --fingerprint SHA256  Revoke a controller's local browser grant
   daemon [--credential-file PATH]  Publish this desktop over outbound TLS
   tools-server             Run the shared HTTPS gateway behind a local TLS proxy
   call <method> [JSON]     Send a browser command (params default to {})
@@ -93,9 +97,10 @@ async function main() {
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
   if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
-  let port = getPort(), token, baseUrl;
+  let port = getPort(), token, baseUrl, fetchImpl;
   if (command === 'auth') { const { runAuth } = await import('../src/tools/cli.js'); await runAuth(args); return; }
   if (command === 'daemon') {
+    if (['trust', 'untrust'].includes(args[0])) { const { daemonPairing } = await import('../src/tools/daemon-cli.js'); await daemonPairing(args); return; }
     if (!(args.length === 0 || args.length === 2 && args[0] === '--credential-file')) throw new Error('Usage: daemon [--credential-file PATH]');
     const { credentialPath } = await import('../src/tools/cli.js'); const { runDaemon } = await import('../src/tools/daemon.js');
     await runDaemon({ credentialFile: args[1] || credentialPath(true), bridgePort: port }); return;
@@ -111,9 +116,8 @@ ${help}`);
     if (['serve', 'teach'].includes(command)) throw new Error('This command requires a local bridge');
     const { getProfile } = await import('../src/remote.js');
     const profile = await getProfile(remote);
-    const { loadCredential } = await import('../src/tools/cli.js'); const c = await loadCredential(profile.credentialFile);
-    if (c.server !== profile.server || c.role !== 'controller') throw new Error('Remote credential does not match server/controller role');
-    baseUrl = `${profile.server}/browser/${profile.device}`; token = c.access_token;
+    const { remoteOptions } = await import('../src/tools/cli.js');
+    ({ baseUrl, fetchImpl } = await remoteOptions(profile));
     autoStart = false;
   }
   if (command === 'serve') {
@@ -137,7 +141,7 @@ ${help}`);
   }
   if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach({ port, browser, autoStart }, args); return; }
   const active = command !== 'status';
-  const client = createClient({ port, browser, token, baseUrl, autoStart: active && autoStart, waitForConnection: active });
+  const client = createClient({ port, browser, token, baseUrl, fetchImpl, autoStart: active && autoStart, waitForConnection: active });
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (command === 'browsers') { console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return; }

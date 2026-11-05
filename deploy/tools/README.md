@@ -25,8 +25,13 @@ or the desktop bridge publicly. DNS is tools.dtcdev.click; no public browser
 extension endpoint exists. The desktop authenticates its outbound WSS connection
 using a separately approved daemon credential. Controller credentials cannot
 publish a daemon; daemon credentials cannot control devices. Both are restricted
-to the same verified user's devices and expire after 30 days. Revocation takes
-effect on in-flight controller requests and daemon connections.
+to the same verified user's devices. Controller access lasts 15 minutes and
+renews with a device-key-bound 30-day grant; daemon credentials last 30 days.
+Browser traffic uses independently pinned inner mutual TLS 1.3. Revocation
+closes active tunnels; local unpairing independently closes inner connections.
+See [pairing, permissions and migration](../../docs/remote-security.md) before
+upgrading. Protocol 2 needs a coordinated controller/daemon upgrade and a fresh
+controller device login. The gateway cannot decrypt browser traffic.
 
 The common `/auth/*`, `/device` and `/api/auth/*` routes implement shared Cognito
 SSO plus the DTC device-login contract. Browser transport is isolated under

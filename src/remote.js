@@ -37,10 +37,8 @@ export async function remoteCommand(args) {
   if (action === 'list' && args.length === 1) { console.log(JSON.stringify(await readProfiles(), null, 2)); return; }
   if (action === 'check' && name && !rest.length) {
     const profile = await getProfile(name);
-    const { loadCredential } = await import('./tools/cli.js');
-    const credential = await loadCredential(profile.credentialFile);
-    if (credential.server !== profile.server || credential.role !== 'controller') throw new Error('Remote credential does not match server/controller role');
-    const client = createClient({ baseUrl: `${profile.server}/browser/${profile.device}`, token: credential.access_token });
+    const { remoteOptions } = await import('./tools/cli.js');
+    const client = createClient(await remoteOptions(profile));
     console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return;
   }
   throw new Error('Usage: remote list | check NAME. Configure remote access with auth login.');
