@@ -26,6 +26,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   const nativeGroups = new Map(initialGroups.map(group => [group.id, { ...group }]));
   let groupId = 100;
   let groupRemoved;
+  let tabCreated, tabRemoved, tabActivated;
   const downloads = new Map([[11, { id: 11, url: 'https://example.com/file.txt', filename: 'C:\\Downloads\\file.txt', state: 'in_progress', exists: true, bytesReceived: 4, totalBytes: 12, mime: 'text/plain' }]]);
   const chrome = {
     storage: { local: {
@@ -53,6 +54,9 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
       }, onDetach: { addListener() {} }
     },
     tabs: {
+      onCreated: { addListener(fn) { tabCreated = fn; } },
+      onRemoved: { addListener(fn) { tabRemoved = fn; } },
+      onActivated: { addListener(fn) { tabActivated = fn; } },
       get: async id => { if (!tabs.has(id)) throw new Error('No tab'); return { ...tabs.get(id) }; },
       query: async query => [...tabs.values()].filter(tab => query.groupId === undefined || tab.groupId === query.groupId).map(tab => ({ ...tab })),
       create: async params => { const tab = { id: 20, windowId: 1, groupId: -1, ...params }; tabs.set(tab.id, tab); return { ...tab }; },
@@ -115,7 +119,10 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
       timers.delete(entry[0]);
       await entry[1].fn();
     },
-    alarm: () => alarm({ name: 'reconnect' }),
+    alarm: (name = 'reconnect') => alarm({ name }),
+    advance: ms => vm.runInContext(`Date.now = () => ${vm.runInContext('Date.now()', context) + ms}`, context),
+    tabCreated: tab => tabCreated(tab),
+    tabActivated: id => tabActivated({ tabId: id }),
     connections: () => connections,
     reloads: () => reloads,
     generatedIds: () => generatedIds,
@@ -556,4 +563,37 @@ test('extension reload replies with the running code, then reloads even while th
   assert.equal(reloads(), 1);
   release();
   await click;
+});
+
+test('idle cleanup closes only agent-created tabs after fifteen minutes and survives disconnection', async () => {
+  const s = await setup();
+  await s.command('tabs.create', { url: 'https://example.test' });
+  s.advance(14 * 60000); await s.alarm('idle-tabs'); assert.ok(s.tabs.has(20));
+  await s.command('page.snapshot', { tabId: 20 });
+  s.advance(14 * 60000); await s.alarm('idle-tabs'); assert.ok(s.tabs.has(20));
+  await s.message({ type: 'disconnect' });
+  s.advance(60001); await s.alarm('idle-tabs'); assert.ok(!s.tabs.has(20));
+  assert.ok(s.tabs.has(7), 'manually opened tabs remain');
+});
+
+test('idle ownership survives worker restart; releasing a tab removes its timer', async () => {
+  const s = await setup({ sessionConfig: { idleTabs: [[7, Date.now() - 16 * 60000]] } });
+  await s.alarm('idle-tabs'); assert.ok(!s.tabs.has(7));
+  await s.command('tabs.create', { url: 'https://example.test' });
+  await s.command('groups.release', { tabId: 20 });
+  s.advance(16 * 60000); await s.alarm('idle-tabs'); assert.ok(s.tabs.has(20));
+});
+
+test('user activation and audible media delay cleanup; popups inherit agent ownership', async () => {
+  const s = await setup();
+  await s.command('tabs.create', { url: 'https://example.test' });
+  s.tabs.set(21, { id: 21, openerTabId: 20, windowId: 1 });
+  s.tabCreated(s.tabs.get(21));
+  s.advance(14 * 60000); s.tabActivated(20);
+  s.advance(2 * 60000); await s.alarm('idle-tabs');
+  assert.ok(!s.tabs.has(21)); assert.ok(s.tabs.has(20));
+  s.tabs.get(20).audible = true;
+  s.advance(16 * 60000); await s.alarm('idle-tabs'); assert.ok(s.tabs.has(20));
+  s.tabs.get(20).audible = false;
+  s.advance(16 * 60000); await s.alarm('idle-tabs'); assert.ok(!s.tabs.has(20));
 });

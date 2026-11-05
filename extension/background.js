@@ -15,6 +15,30 @@ const attached = new Set();
 const initializing = new Map();
 const managedGroups = new Map();
 let groupQueue = Promise.resolve();
+const idleTabs = new Map();
+const busyTabs = new Map();
+let tabIdleMinutes = 15;
+const saveIdleTabs = () => chrome.storage.session.set({ idleTabs: [...idleTabs] });
+async function touchIdleTab(tabId, create = false) {
+  if (!Number.isInteger(tabId) || (!create && !idleTabs.has(tabId))) return;
+  idleTabs.set(tabId, Date.now());
+  await saveIdleTabs();
+}
+async function closeIdleTabs() {
+  for (const [id, lastUsed] of idleTabs) {
+    if (busyTabs.has(id) || Date.now() - lastUsed < tabIdleMinutes * 60000) continue;
+    try {
+      const tab = await chrome.tabs.get(id);
+      if (busyTabs.has(id) || Date.now() - idleTabs.get(id) < tabIdleMinutes * 60000) continue;
+      // Pinned tabs belong to the person; audible media is still in use.
+      if (tab.pinned || tab.audible) { await touchIdleTab(id); continue; }
+      await chrome.tabs.remove(id);
+    } catch { /* A tab may already have been closed. */ }
+    idleTabs.delete(id);
+    pointers.delete(id);
+  }
+  await saveIdleTabs();
+}
 // Every source file this extension loads. The worker hashes them at startup and
 // reports the hash in its hello, so the bridge can prove which code is live and
 // warn when the loaded extension differs from the bridge's extension directory.
@@ -26,13 +50,15 @@ async function hashCode() {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(CODE_FILES.map((file, index) => `${file}\0${texts[index]}`).join('\0')));
   return { sha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join(''), files: CODE_FILES };
 }
-const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError', 'browserId']).then(async config => {
+const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError', 'browserId', 'tabIdleMinutes']).then(async config => {
   code = await hashCode().catch(() => null);
   browserId = config.browserId || crypto.randomUUID();
   if (!config.browserId) await chrome.storage.local.set({ browserId });
   browser = { id: browserId, connected: false };
-  const session = await chrome.storage.session.get('managedGroups');
+  if (Number.isFinite(config.tabIdleMinutes) && config.tabIdleMinutes >= 1 && config.tabIdleMinutes <= 1440) tabIdleMinutes = config.tabIdleMinutes;
+  const session = await chrome.storage.session.get(['managedGroups', 'idleTabs']);
   for (const group of session.managedGroups || []) if (group.ownerId === browserId) managedGroups.set(group.windowId, group);
+  for (const [id, lastUsed] of session.idleTabs || []) if (Number.isInteger(id) && Number.isFinite(lastUsed)) idleTabs.set(id, lastUsed);
   await chrome.storage.local.remove('token');
   enabled = config.paused !== true && (config.enabled !== false || !!config.connectionError);
   if (enabled && config.connectionError) {
@@ -287,6 +313,7 @@ async function dispatch(method, params = {}) {
   if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId, openerTabId }) => ({ id, windowId, title, url, active, status, groupId, ...(openerTabId === undefined ? {} : { openerTabId }), managed: [...managedGroups.values()].some(group => group.id === groupId) }));
   if (method === 'tabs.create') {
     const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: params.active ?? true });
+    await touchIdleTab(tab.id, true);
     await manageTab(tab.id);
     return chrome.tabs.get(tab.id);
   }
@@ -300,6 +327,8 @@ async function dispatch(method, params = {}) {
   if (method === 'tabs.close') { await chrome.tabs.remove(tabId); pointers.delete(tabId); return { closed: true }; }
   if (method === 'groups.manage') return manageTab(tabId, params);
   if (method === 'groups.release') {
+    idleTabs.delete(tabId);
+    await saveIdleTabs();
     const tab = await chrome.tabs.get(tabId);
     const group = await existingGroup(tab.windowId);
     if (!group || tab.groupId !== group.id) return { tabId, released: false };
@@ -397,12 +426,20 @@ function connect() {
     if (!enabled || !message.id || typeof message.method !== 'string') return;
     const requestedGeneration = generation;
     try {
-      const execute = () => {
+      const execute = async () => {
         if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
         activeGeneration = requestedGeneration;
-        return message.method === 'downloads.wait'
-          ? waitForDownload(message.params || {}, requestedGeneration)
-          : dispatch(message.method, message.params);
+        const id = message.params?.tabId;
+        if (Number.isInteger(id)) busyTabs.set(id, (busyTabs.get(id) || 0) + 1);
+        try {
+          await touchIdleTab(id);
+          return await (message.method === 'downloads.wait'
+            ? waitForDownload(message.params || {}, requestedGeneration)
+            : dispatch(message.method, message.params));
+        } finally {
+          if ((busyTabs.get(id) || 0) > 1) busyTabs.set(id, busyTabs.get(id) - 1); else busyTabs.delete(id);
+          await touchIdleTab(id);
+        }
       };
       // Transfers and dialog handling must not wait behind page actions; a dialog
       // can be the reason an earlier navigation or tab close is still waiting.
@@ -458,6 +495,14 @@ async function disconnect() {
   attached.clear();
 }
 chrome.debugger.onDetach.addListener(({ tabId }) => attached.delete(tabId));
+chrome.tabs.onRemoved.addListener(id => {
+  idleTabs.delete(id); pointers.delete(id); saveIdleTabs().catch(() => {});
+});
+chrome.tabs.onCreated.addListener(tab => {
+  // Links/popups opened by agent-owned tabs inherit their lifetime.
+  if (idleTabs.has(tab.openerTabId)) touchIdleTab(tab.id, true).catch(() => {});
+});
+chrome.tabs.onActivated.addListener(({ tabId }) => touchIdleTab(tabId).catch(() => {}));
 chrome.tabGroups.onRemoved.addListener(group => {
   for (const [windowId, known] of managedGroups) if (known.id === group.id) managedGroups.delete(windowId);
   saveGroups().catch(() => {});
@@ -467,8 +512,10 @@ chrome.tabGroups.onRemoved.addListener(group => {
 chrome.runtime.onInstalled.addListener(() => {});
 chrome.runtime.onStartup.addListener(() => {});
 chrome.alarms.create('reconnect', { periodInMinutes: 0.5 });
+chrome.alarms.create('idle-tabs', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(async ({ name }) => {
   await startup;
+  if (name === 'idle-tabs') await closeIdleTabs();
   if (name === 'reconnect' && enabled && !socket) connect();
 });
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
