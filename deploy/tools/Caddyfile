@@ -1,0 +1,4 @@
+tools.dtcdev.click {
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy 127.0.0.1:19336
+}

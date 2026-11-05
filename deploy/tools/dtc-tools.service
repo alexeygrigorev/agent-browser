@@ -1,0 +1,23 @@
+[Unit]
+Description=DTC shared tools gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dtc-tools
+Group=dtc-tools
+EnvironmentFile=/etc/dtc-tools.env
+ExecStart=/usr/local/bin/node /opt/dtc-tools/current/bin/cli.js tools-server
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dtc-tools
+UMask=0077
+MemoryMax=384M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
