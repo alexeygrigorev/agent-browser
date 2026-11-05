@@ -11,6 +11,11 @@ import { getPort, createClient } from './client.js';
 export const configFile = () => process.env.AGENT_BROWSER_REMOTE_CONFIG || join(homedir(), '.agent-browser', 'remotes.json');
 const namePattern = /^[a-z][a-z0-9_-]{0,31}$/;
 export function validateProfile(profile) {
+  if (profile?.kind === 'tools') {
+    const url = new URL(profile.server);
+    if (url.protocol !== 'https:' || url.origin !== profile.server || !/^[a-z][a-z0-9_-]{0,31}$/.test(profile.device || '') || typeof profile.credentialFile !== 'string' || !profile.credentialFile) throw new Error('Invalid tools remote profile');
+    return profile;
+  }
   if (!profile || typeof profile !== 'object' || !/^[a-zA-Z0-9_][a-zA-Z0-9_.@-]*$/.test(profile.host || '')) throw new Error('Remote host must be an SSH alias or user@host');
   for (const key of ['port', 'remotePort', 'gatewayPort']) {
     if (!Number.isInteger(profile[key])) throw new Error(`Remote ${key} must be an integer`);
@@ -83,6 +88,7 @@ export function createGateway({ token, bridgePort = 19333 }) {
 }
 
 export async function runRemote(mode, profile, { reconnect = false } = {}) {
+  if (profile.kind === 'tools') throw new Error('SSH tunnels are not needed for tools remotes. Start the desktop daemon and use --remote NAME.');
   const token = await readToken(profile.tokenFile);
   let gateway;
   if (mode === 'publish') {
@@ -124,7 +130,15 @@ export async function remoteCommand(args) {
   }
   if (['connect', 'publish', 'check'].includes(action) && name && (rest.length === 0 || rest.length === 1 && rest[0] === '--reconnect')) {
     const profile = await getProfile(name);
-    if (action === 'check') { console.log(JSON.stringify(await createClient({ port: profile.port, token: await readToken(profile.tokenFile) }).call('browsers.list'), null, 2)); return; }
+    if (action === 'check') {
+      let options = { port: profile.port };
+      if (profile.kind === 'tools') {
+        const { loadCredential } = await import('./tools/cli.js'); const c = await loadCredential(profile.credentialFile);
+        if (c.server !== profile.server || c.role !== 'controller') throw new Error('Remote credential does not match server/controller role');
+        options = { baseUrl: `${profile.server}/browser/${profile.device}`, token: c.access_token };
+      } else options.token = await readToken(profile.tokenFile);
+      console.log(JSON.stringify(await createClient(options).call('browsers.list'), null, 2)); return;
+    }
     await runRemote(action, profile, { reconnect: rest[0] === '--reconnect' }); return;
   }
   throw new Error('Usage: remote list | add NAME --host SSH_HOST --token-file PATH [--identity PATH] [--port N] [--remote-port N] [--gateway-port N] | connect|publish NAME [--reconnect] | check NAME');

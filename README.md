@@ -144,6 +144,44 @@ Use the recording ID returned by `record start`. Install FFmpeg on the computer 
 
 ### Saved, authenticated remote access
 
+Use shared device login at **https://tools.dtcdev.click/browser**. The desktop
+runs an outbound TLS daemon; controlling machines need no SSH tunnel or shared
+secret file. Sign in and approve each machine using the same DTC device flow as
+Dapier, DataOps and Hub.
+
+On the desktop, authorize the daemon once, then keep it running:
+
+```sh
+node bin/cli.js auth login --daemon --device desktop
+node bin/cli.js daemon
+```
+
+On a controlling machine:
+
+```sh
+node bin/cli.js auth login --device desktop
+node bin/cli.js auth status
+node bin/cli.js --remote desktop --browser orin call tabs.list '{}'
+node bin/cli.js --remote desktop --browser main mcp
+```
+
+`auth login` prints a verification link and code. Open the link, sign in through
+the existing shared Google/Cognito login and approve the displayed request.
+Credentials are unique to the machine and role, stored privately with a 30-day
+expiry, and revocable from the browser portal or using `auth logout` (add
+`--daemon` for the daemon credential). `remote check desktop` verifies browser
+connectivity. A paused/offline desktop fails rather than falling back to another
+browser. Uploads and downloads stream through the same authenticated connection.
+The daemon can publish only its named device; controllers can access only
+devices owned by their signed-in identity. The gateway terminates TLS and is
+trusted to relay browser data; cookies and Chrome profiles remain on the desktop.
+
+The shared login loop is vendored unchanged from DataTalksClub/auth; see
+`vendor/README.md` for its source commit. Gateway deployment and the common
+auth boundary for future tools are documented in `deploy/tools/README.md`.
+
+### Legacy SSH relay access
+
 For a dedicated relay, the desktop publishes an authenticated gateway over SSH;
 the agent connects a second SSH tunnel to that relay. Chrome and cookies stay on
 the desktop; the gateway credential is stored only on the desktop and agent host.

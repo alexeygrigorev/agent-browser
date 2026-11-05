@@ -64,6 +64,9 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   teach status | teach process <id>  Show the session, or rebuild a bundle
   tunnel <ssh-host> [--remote-port <port>]  Forward this bridge to a remote host
   remote add|list|connect|publish|check  Configure authenticated SSH relay access
+  auth login|status|logout [--daemon]  Sign in using the shared DTC device flow
+  daemon [--credential-file PATH]  Publish this desktop over outbound TLS
+  tools-server             Run the shared HTTPS gateway behind a local TLS proxy
   call <method> [JSON]     Send a browser command (params default to {})
   call <method> --stdin    Read JSON params from standard input
   call <method> --params-file <path>  Read UTF-8 JSON params from a file
@@ -89,15 +92,32 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'remote', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'remote', 'auth', 'daemon', 'tools-server', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
-  let port = getPort(), token;
+  let port = getPort(), token, baseUrl;
+  if (command === 'auth') { const { runAuth } = await import('../src/tools/cli.js'); await runAuth(args); return; }
+  if (command === 'daemon') {
+    if (!(args.length === 0 || args.length === 2 && args[0] === '--credential-file')) throw new Error('Usage: daemon [--credential-file PATH]');
+    const { credentialPath } = await import('../src/tools/cli.js'); const { runDaemon } = await import('../src/tools/daemon.js');
+    await runDaemon({ credentialFile: args[1] || credentialPath(true), bridgePort: port }); return;
+  }
+  if (command === 'tools-server') {
+    const { createToolsServer } = await import('../src/tools/server.js');
+    const tools = await createToolsServer({ file: process.env.TOOLS_STATE_FILE, origin: process.env.TOOLS_ORIGIN || 'https://tools.dtcdev.click', clientId: process.env.TOOLS_AUTH_CLIENT_ID });
+    await tools.listen(getPort(process.env.TOOLS_PORT || '19336')); console.log('Tools gateway listening on loopback');
+    const stop = async () => { await tools.close(); }; process.once('SIGINT', stop); process.once('SIGTERM', stop); return;
+  }
   if (command === 'remote') { const { remoteCommand } = await import('../src/remote.js'); await remoteCommand(args); return; }
   if (remote) {
     if (['serve', 'tunnel', 'teach'].includes(command)) throw new Error('This command requires a local bridge');
     const { getProfile, readToken } = await import('../src/remote.js');
     const profile = await getProfile(remote);
-    port = profile.port; token = await readToken(profile.tokenFile); autoStart = false;
+    if (profile.kind === 'tools') {
+      const { loadCredential } = await import('../src/tools/cli.js'); const c = await loadCredential(profile.credentialFile);
+      if (c.server !== profile.server || c.role !== 'controller') throw new Error('Remote credential does not match server/controller role');
+      baseUrl = `${profile.server}/browser/${profile.device}`; token = c.access_token;
+    } else { port = profile.port; token = await readToken(profile.tokenFile); }
+    autoStart = false;
   }
   if (command === 'serve') {
     const bridge = createBridge({ port, onDiagnostic: event => {
@@ -126,7 +146,7 @@ ${help}`);
   }
   if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach({ port, browser, autoStart }, args); return; }
   const active = command !== 'status';
-  const client = createClient({ port, browser, token, autoStart: active && autoStart, waitForConnection: active });
+  const client = createClient({ port, browser, token, baseUrl, autoStart: active && autoStart, waitForConnection: active });
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (command === 'browsers') { console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return; }
