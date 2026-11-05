@@ -17,7 +17,9 @@ export async function jsonBody(req, limit = 16384) {
 }
 export function json(res, status, body) { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); }
 export function page(res, title, body) {
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
+  // Basic form POSTs under no-referrer may send Origin:null. Keep the real
+  // origin for same-origin CSRF checks without sending referrers off-site.
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'same-origin',
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", 'x-content-type-options': 'nosniff' });
   res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)} · DTC Tools</title><style>body{font:17px/1.55 system-ui;color:#18332e;background:#f3f4ef;max-width:720px;margin:8vh auto;padding:24px}main{background:white;border:1px solid #ccd5ce;padding:36px;border-radius:12px}h1{font-size:30px;line-height:1.2}a{color:#126347}button{font:inherit;padding:10px 20px;background:#126347;color:white;border:0;border-radius:5px;cursor:pointer}button[name=deny]{background:#6b3838}input{font:inherit;padding:9px;max-width:90%}code{font-size:22px}small{color:#52645b}</style><main><small>DataTalks.Club · Tools</small><h1>${escape(title)}</h1>${body}</main></html>`);
 }
