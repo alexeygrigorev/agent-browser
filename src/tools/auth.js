@@ -61,12 +61,12 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
   }
   function csrf(req, s, value) { if (req.headers.origin !== origin || value !== s.csrf) throw fail(403, 'Invalid approval request'); }
   const rates = new Map();
-  function rate(req) {
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  function rate(req, limit = 30, kind = 'start') {
+    const ip = `${kind}:${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`;
     const time = now();
     for (const [key, value] of rates) if (value.until < time) rates.delete(key);
     const item = rates.get(ip) || { count: 0, until: time + 900000 };
-    if (rates.size > 5000 || ++item.count > 30) throw fail(429, 'Too many login requests');
+    if (rates.size > 5000 || ++item.count > limit) throw fail(429, 'Too many login requests');
     rates.set(ip, item);
   }
   async function handle(req, res, url, onRevoke = () => {}) {
@@ -106,6 +106,7 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
       await save(); json(res, 200, { device_code: raw, user_code: userCode, verification_uri: `${origin}/device`, verification_uri_complete: `${origin}/device?code=${userCode}`, expires_in: 600, interval: 5 }); return true;
     }
     if (req.method === 'POST' && path === '/api/auth/device/token') {
+      rate(req, 1200, 'poll');
       const body = await jsonBody(req); const key = typeof body.device_code === 'string' ? hash(body.device_code) : ''; const d = state.devices[key];
       if (body.grant_type !== 'urn:ietf:params:oauth:grant-type:device_code') { json(res, 400, { error: 'unsupported_grant_type' }); return true; }
       if (!d || d.expires <= now()) { json(res, 400, { error: 'expired_token' }); return true; }
@@ -148,7 +149,8 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
         b = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
       } else b = await jsonBody(req);
       csrf(req, s, b.csrf);
-      const c = state.credentials[b.id]; if (!c || c.owner !== s.owner) throw fail(404, 'Credential not found'); delete state.credentials[b.id]; await save(); onRevoke(b.id); json(res, 200, { revoked: true }); return true;
+      const c = state.credentials[b.id]; if (!c || c.owner !== s.owner) throw fail(404, 'Credential not found'); delete state.credentials[b.id]; await save(); onRevoke(b.id);
+      if (path === '/auth/revoke') { res.writeHead(303, { location: '/browser' }); res.end(); } else json(res, 200, { revoked: true }); return true;
     }
     throw fail(404, 'Not found');
   }
