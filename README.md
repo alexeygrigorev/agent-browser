@@ -315,6 +315,16 @@ The browser layer only observes: it uses a content script and `chrome.tabs.captu
 
 ## Trust and limitations
 
+Agent-created tabs and their popups close after **15 minutes without a command
+targeting that tab**. The extension checks once a minute, including while the
+CLI or remote connection is offline. Commands and selecting a tab reset its
+timer; pinned tabs and audible media are retained. Manually opened tabs are
+never enrolled just because an agent inspects them. `groups.release` hands an
+agent tab back to you and removes its timer. Timers survive service-worker
+restarts within the current Chrome session. This applies equally to local and
+remote agents. A local extension setting, `tabIdleMinutes` (1–1440 minutes,
+default 15), can override the timeout.
+
 Any local process that can reach the running bridge can control the connected browser. Use it on a trusted computer with trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action. Use **Pause** in the extension to pause browser access: browser calls can restart a stopped bridge automatically.
 
 The bridge binds to `127.0.0.1`, requires the expected loopback Host, and rejects HTTP requests carrying an Origin header. Extension WebSockets require a Chrome extension origin and a `hello` handshake with protocol version `1`. Multiple profiles connect using independent browser IDs. A legacy `auth` handshake is accepted temporarily so an already installed extension can transition; its token is not validated. These checks restrict website access and do not authenticate local processes. Keep the service off public interfaces; for remote access, use device login and the outbound desktop daemon described above.
