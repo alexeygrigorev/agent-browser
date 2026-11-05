@@ -85,9 +85,13 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
       res.writeHead(303, { location: target.href, 'set-cookie': cookie('__Host-tools-tx', binding, 600), 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end(); return true;
     }
     if (req.method === 'GET' && path === '/auth/callback') {
-      const txKey = hash(url.searchParams.get('state') || ''); const tx = state.transactions[txKey]; delete state.transactions[txKey]; await save();
+      rate(req, 120, 'callback');
+      const txKey = hash(url.searchParams.get('state') || ''); const tx = state.transactions[txKey];
       try {
         if (!tx || tx.expires <= now() || tx.binding !== hash(cookieValue(req, '__Host-tools-tx') || '') || !url.searchParams.get('code')) throw fail(401, 'Invalid login transaction');
+        // Reject unsolicited callbacks without disk writes or consuming another
+        // browser's transaction. Consume a valid, bound code exchange only once.
+        delete state.transactions[txKey]; await save();
         const response = await fetch(`${authBase}/oauth2/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, code: url.searchParams.get('code'), redirect_uri: `${origin}/auth/callback`, code_verifier: tx.verifier }), signal: AbortSignal.timeout(15000) });
         if (!response.ok) throw fail(401, 'Identity exchange failed');
         const result = await response.json(); const identity = await verify(result.id_token, tx.nonce);
