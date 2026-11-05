@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { open } from 'node:fs/promises';
-import { writePrivate } from '../src/tools/private-store.js';
+import { writePrivate, privateBrowserHome } from '../src/tools/private-store.js';
 
 const log = join(homedir(), '.agent-browser', 'tools', 'daemon.log');
+await privateBrowserHome();
 // Retain recent audit output across restarts and set private permissions.
 let tail = '';
 try {

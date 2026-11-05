@@ -1,12 +1,18 @@
-import { mkdir, open, unlink, rmdir, stat, readdir, realpath, lstat } from 'node:fs/promises';
+import { open, unlink, rmdir, stat, readdir, realpath, lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, isAbsolute, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { privateDirectory, privateBrowserHome } from './tools/private-store.js';
 
 export function createFiles({ directory = join(homedir(), '.agent-browser', 'uploads'), maxBytes = 64 * 1024 * 1024, maxStoredBytes = Infinity, maxFiles = Infinity, retentionMs = Infinity, now = Date.now } = {}) {
   let reserved = 0, active = 0; const activeFolders = new Set();
+  let initialized;
   async function inventory() {
-    await mkdir(directory, { recursive: true, mode: 0o700 }); let bytes = 0, count = 0;
+    initialized ||= (async () => {
+      if (directory === join(homedir(), '.agent-browser', 'uploads')) await privateBrowserHome();
+      await privateDirectory(directory);
+    })().catch(error => { initialized = undefined; throw error; });
+    await initialized; let bytes = 0, count = 0;
     for (const folder of await readdir(directory, { withFileTypes: true })) {
       if (!folder.isDirectory() || !/^[a-f0-9-]{36}$/.test(folder.name)) continue;
       const parent = join(directory, folder.name);
@@ -34,7 +40,7 @@ export function createFiles({ directory = join(homedir(), '.agent-browser', 'upl
       activeFolders.add(folder);
       let file, size = 0;
       try {
-        await mkdir(folder, { recursive: true, mode: 0o700 });
+        await privateDirectory(folder);
         file = await open(path, 'wx', 0o600);
         const chunks = source.iterator ? source.iterator({ destroyOnReturn: false }) : source;
         for await (const value of chunks) {

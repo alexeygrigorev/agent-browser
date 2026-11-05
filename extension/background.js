@@ -29,7 +29,7 @@ async function closeIdleTabs() {
     if (busyTabs.has(id) || Date.now() - lastUsed < tabIdleMinutes * 60000) continue;
     try {
       const tab = await chrome.tabs.get(id);
-      if (busyTabs.has(id) || Date.now() - idleTabs.get(id) < tabIdleMinutes * 60000) continue;
+      if (!idleTabs.has(id) || busyTabs.has(id) || Date.now() - idleTabs.get(id) < tabIdleMinutes * 60000) continue;
       // Pinned tabs belong to the person; audible media is still in use.
       if (tab.pinned || tab.audible) { await touchIdleTab(id); continue; }
       await chrome.tabs.remove(id);
