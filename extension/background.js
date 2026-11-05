@@ -167,6 +167,12 @@ function manageTab(tabId, { title, color } = {}) {
     if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 80)) throw new Error('Group title must contain 1 to 80 characters');
     if (color !== undefined && !['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'].includes(color)) throw new Error('Unknown tab group color');
     const tab = await chrome.tabs.get(tabId);
+    const window = await chrome.windows.get(tab.windowId);
+    if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
+    // Auth dialogs are real tabs in popup windows. Chrome versions may reject
+    // grouping there, and moving an OAuth window can break its opener flow.
+    // Debugger access and the visible pointer work without a tab group.
+    if (window.type !== 'normal') return { windowId: tab.windowId, windowType: window.type, managed: false };
     let group = await existingGroup(tab.windowId);
     if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
     if (!group) {
@@ -310,7 +316,14 @@ async function dispatch(method, params = {}) {
     return (await chrome.downloads.search({ limit, orderBy: ['-startTime'], ...(params.state === undefined ? {} : { state: params.state }) })).map(downloadMetadata);
   }
   if (method.startsWith('teach.')) return teachDispatch(method, params);
-  if (method === 'tabs.list') return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId, openerTabId }) => ({ id, windowId, title, url, active, status, groupId, ...(openerTabId === undefined ? {} : { openerTabId }), managed: [...managedGroups.values()].some(group => group.id === groupId) }));
+  if (method === 'tabs.list') {
+    const windows = new Map((await chrome.windows.getAll()).map(window => [window.id, window]));
+    return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId, openerTabId }) => ({
+      id, windowId, windowType: windows.get(windowId)?.type || 'unknown', windowFocused: windows.get(windowId)?.focused ?? false,
+      title, url, active, status, groupId, ...(openerTabId === undefined ? {} : { openerTabId }),
+      managed: [...managedGroups.values()].some(group => group.id === groupId)
+    }));
+  }
   if (method === 'tabs.create') {
     const tab = await chrome.tabs.create({ url: params.url || 'about:blank', active: params.active ?? true });
     await touchIdleTab(tab.id, true);
@@ -331,10 +344,11 @@ async function dispatch(method, params = {}) {
     await saveIdleTabs();
     const tab = await chrome.tabs.get(tabId);
     const group = await existingGroup(tab.windowId);
-    if (!group || tab.groupId !== group.id) return { tabId, released: false };
-    await chrome.tabs.ungroup([tabId]);
-    if (attached.has(tabId)) { await chrome.debugger.detach({ tabId }); attached.delete(tabId); }
-    return { tabId, released: true };
+    const grouped = !!group && tab.groupId === group.id;
+    if (grouped) await chrome.tabs.ungroup([tabId]);
+    const detached = attached.has(tabId);
+    if (detached) { await chrome.debugger.detach({ tabId }); attached.delete(tabId); }
+    return { tabId, released: grouped || detached };
   }
   if (method === 'tabs.navigate') {
     await manageTab(tabId);

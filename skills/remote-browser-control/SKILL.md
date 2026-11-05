@@ -66,6 +66,13 @@ Use `browsers`, then `tabs.list`, then `page.snapshot` before interacting. Inspe
 the page before retrying a timed-out consequential action; it may have executed.
 The visible agent cursor and click pulse follow real CDP pointer input.
 
+After a sign-in click, refresh `tabs.list`: it lists all windows in the selected
+profile, including authentication popups. Use `windowType`, `windowId` and
+`openerTabId` to find the popup, then inspect and control its own tab ID.
+`windowFocused` helps identify which window is visible. Popup windows remain
+ungrouped in their original window; `groups.release` still detaches control.
+This does not grant access to another profile.
+
 ```sh
 node bin/cli.js --remote desktop --browser orin click TAB_ID SELECTOR
 node bin/cli.js --remote desktop --browser orin hover TAB_ID X Y
