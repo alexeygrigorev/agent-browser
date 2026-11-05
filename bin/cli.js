@@ -62,8 +62,7 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
                            mouse, keyboard, windows, plus Chrome details
   teach stop [--no-sync]   Stop, transcribe, build timeline.md, sync the bundle
   teach status | teach process <id>  Show the session, or rebuild a bundle
-  tunnel <ssh-host> [--remote-port <port>]  Forward this bridge to a remote host
-  remote add|list|connect|publish|check  Configure authenticated SSH relay access
+  remote list|check NAME    Inspect device-authenticated remote browser access
   auth login|status|logout [--daemon]  Sign in using the shared DTC device flow
   daemon [--credential-file PATH]  Publish this desktop over outbound TLS
   tools-server             Run the shared HTTPS gateway behind a local TLS proxy
@@ -74,7 +73,7 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
 
 call and mcp start the local bridge automatically when needed.
 
-Global: --no-autostart (use an existing bridge or SSH tunnel only), --remote NAME
+Global: --no-autostart (use an existing bridge only), --remote NAME
 Environment: AGENT_BROWSER_PORT (default 19333), AGENT_BROWSER_NAME, AGENT_BROWSER_AUTOSTART=0
 Example: agent-browser-bridge --browser main call tabs.list`;
 
@@ -92,7 +91,7 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'tunnel', 'remote', 'auth', 'daemon', 'tools-server', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
   let port = getPort(), token, baseUrl;
   if (command === 'auth') { const { runAuth } = await import('../src/tools/cli.js'); await runAuth(args); return; }
@@ -109,14 +108,12 @@ ${help}`);
   }
   if (command === 'remote') { const { remoteCommand } = await import('../src/remote.js'); await remoteCommand(args); return; }
   if (remote) {
-    if (['serve', 'tunnel', 'teach'].includes(command)) throw new Error('This command requires a local bridge');
-    const { getProfile, readToken } = await import('../src/remote.js');
+    if (['serve', 'teach'].includes(command)) throw new Error('This command requires a local bridge');
+    const { getProfile } = await import('../src/remote.js');
     const profile = await getProfile(remote);
-    if (profile.kind === 'tools') {
-      const { loadCredential } = await import('../src/tools/cli.js'); const c = await loadCredential(profile.credentialFile);
-      if (c.server !== profile.server || c.role !== 'controller') throw new Error('Remote credential does not match server/controller role');
-      baseUrl = `${profile.server}/browser/${profile.device}`; token = c.access_token;
-    } else { port = profile.port; token = await readToken(profile.tokenFile); }
+    const { loadCredential } = await import('../src/tools/cli.js'); const c = await loadCredential(profile.credentialFile);
+    if (c.server !== profile.server || c.role !== 'controller') throw new Error('Remote credential does not match server/controller role');
+    baseUrl = `${profile.server}/browser/${profile.device}`; token = c.access_token;
     autoStart = false;
   }
   if (command === 'serve') {
@@ -136,12 +133,6 @@ ${help}`);
     const close = async () => { if (closing) return; closing = true; await bridge.close(); };
     process.once('SIGINT', close);
     process.once('SIGTERM', close);
-    return;
-  }
-  if (command === 'tunnel') {
-    if (!args[0] || !(args.length === 1 || (args.length === 3 && args[1] === '--remote-port'))) throw new Error('Usage: tunnel <ssh-host> [--remote-port <port>]');
-    const { startTunnel } = await import('../src/tunnel.js');
-    await startTunnel(args[0], { port, remotePort: args[2] ? getPort(args[2]) : port, ensureBridge: autoStart });
     return;
   }
   if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach({ port, browser, autoStart }, args); return; }

@@ -4,7 +4,7 @@
 
 Control your existing, signed-in Chrome from any agent that can run a shell command or connect to an MCP server. Install the unpacked extension in the Chrome profile you already use. It connects automatically to a local service and controls that profile's existing tabs with their existing cookies and logins. No token or pairing step is required. You do not need a separate browser, a remote debugging launch flag, or to export cookies.
 
-Control multiple Chrome profiles through one bridge, select them by nickname, upload files, retrieve downloads, take screenshots, and record silent video. Agents on another machine can use the same browsers through an SSH tunnel.
+Control multiple Chrome profiles through one bridge, select them by nickname, upload files, retrieve downloads, take screenshots, and record silent video. Agents on another machine can use the same browsers through the authenticated HTTPS gateway.
 
 | `main` profile | `orin` profile |
 | --- | --- |
@@ -62,7 +62,7 @@ Use `--browser main` to pin commands to that browser. A mismatched or disconnect
 
 Install the extension in each Chrome profile you want to control. Name each profile while it is selected, then use `browsers` to inspect connected IDs and nicknames. For example, keep your everyday profile named `main` and another named `orin`, and pass the desired name with each agent command.
 
-One shared bridge on port `19333` supports multiple profiles concurrently. Load the **same extension directory** in each profile; do not copy the extension, edit its port, or start a service per profile. Each profile stores its own stable UUID. Use `--browser ID browser name NAME` to assign any nickname, then select it on each CLI command or with the MCP tool's `browser` property. Offline aliases remain visible in `browsers` with `connected: false`. Different profiles can work concurrently; actions within each profile are serialized. A single SSH tunnel carries every profile to remote agents.
+One shared bridge on port `19333` supports multiple profiles concurrently. Load the **same extension directory** in each profile; do not copy the extension, edit its port, or start a service per profile. Each profile stores its own stable UUID. Use `--browser ID browser name NAME` to assign any nickname, then select it on each CLI command or with the MCP tool's `browser` property. Offline aliases remain visible in `browsers` with `connected: false`. Different profiles can work concurrently; actions within each profile are serialized. One outbound desktop daemon carries every profile to authenticated remote agents.
 
 If an agent claims only one profile is supported, have it read this checkout's current skills and tool definitions. After upgrading an older unpacked extension, reload it once in each profile to activate the worker's UUID identity. Normal operation needs no Connect click.
 
@@ -86,7 +86,7 @@ Upload a file from the agent's computer into a page's file input:
 node bin/cli.js --browser main upload 123 'input[type=file]' ./report.pdf
 ```
 
-The client transfers the file to the desktop bridge and selects it in the page; submit the form separately when intended. This works through the SSH tunnel too, so remote agents do not need a desktop filesystem path. Multiple files may follow the selector. MCP `page_upload` performs the same transfer. Generic `page.upload` calls instead require paths that already exist on the desktop.
+The client transfers the file to the desktop bridge and selects it in the page; submit the form separately when intended. This works through the HTTPS gateway too, so remote agents do not need a desktop filesystem path. Multiple files may follow the selector. MCP `page_upload` performs the same transfer. Generic `page.upload` calls instead require paths that already exist on the desktop.
 
 Staging accepts up to 64 MiB per file. Copies remain under `~/.agent-browser/uploads` on the desktop so a page can submit them later. CLI and MCP upload read specific client paths; generic page upload validates specific desktop paths. This does not provide a general filesystem browsing interface.
 
@@ -100,7 +100,7 @@ node bin/cli.js --browser main downloads save 5 --output ./report.pdf
 
 Use the download ID returned by `download`. Metadata reports the state and absolute `filename` on the Chrome computer, including when the agent runs remotely. An optional filename is relative to Chrome's downloads directory; wait for completion before using the file. Downloading through Chrome preserves the selected profile's existing login session.
 
-`downloads save` copies a completed Chrome download to a new file on the agent's computer, including through the SSH tunnel. It does not overwrite existing output files. MCP `downloads_save` provides the same transfer. The Chrome metadata's absolute desktop filename and the agent's chosen output path belong to different computers when used remotely.
+`downloads save` copies a completed Chrome download to a new file on the agent's computer, including through the HTTPS gateway. It does not overwrite existing output files. MCP `downloads_save` provides the same transfer. The Chrome metadata's absolute desktop filename and the agent's chosen output path belong to different computers when used remotely.
 
 ## Mouse input
 
@@ -140,7 +140,7 @@ node bin/cli.js --browser main record stop RECORDING_ID
 
 Use the recording ID returned by `record start`. Install FFmpeg on the computer running the bridge and make `ffmpeg` available on PATH, or set `AGENT_BROWSER_FFMPEG` to its executable path. Recording captures browser frames without audio. With a remote agent, recording output paths refer to the computer running the bridge.
 
-## Agents on Hetzner or another SSH host
+## Agents on Hetzner or another machine
 
 ### Saved, authenticated remote access
 
@@ -180,72 +180,9 @@ The shared login loop is vendored unchanged from DataTalksClub/auth; see
 `vendor/README.md` for its source commit. Gateway deployment and the common
 auth boundary for future tools are documented in `deploy/tools/README.md`.
 
-### Legacy SSH relay access
-
-For a dedicated relay, the desktop publishes an authenticated gateway over SSH;
-the agent connects a second SSH tunnel to that relay. Chrome and cookies stay on
-the desktop; the gateway credential is stored only on the desktop and agent host.
-The relay is trusted infrastructure: its administrator can inspect forwarded
-traffic. Both relay listeners bind to loopback.
-
-Create a random 32-byte base64url credential and store the same value in a private
-file on the desktop and agent host (mode 600 on Unix; user-only ACL on Windows).
-Use separate SSH keys and forwarding-only relay users for publishing and consuming.
-Pin the relay host key from a trusted provisioning channel before connecting.
-
-On the desktop:
-
-```sh
-node bin/cli.js remote add desktop --host publisher@relay --identity /private/publish-key --token-file /private/browser-token
-node bin/cli.js remote publish desktop --reconnect
-```
-
-On Hetzner:
-
-```sh
-node bin/cli.js remote add desktop --host consumer@relay --identity /private/consume-key --token-file /private/browser-token
-node bin/cli.js remote connect desktop --reconnect
-node bin/cli.js remote check desktop
-node bin/cli.js --remote desktop --browser main call tabs.list '{}'
-node bin/cli.js --remote desktop --browser orin mcp
-```
-
-`--remote` disables bridge autostart, loads the port and token from the named
-profile, and applies authentication to commands, uploads, and downloads. It never
-falls back to a local browser. `remote list` shows saved configuration without
-reading credential contents. Configuration lives at `~/.agent-browser/remotes.json`
-(override with `AGENT_BROWSER_REMOTE_CONFIG`). Defaults: client port 19335,
-relay port 19334, desktop gateway port 19334; `remote add` accepts `--port`,
-`--remote-port`, and `--gateway-port` overrides. `--reconnect` retries failed SSH
-connections; run under a service manager for restart after reboot.
-
-Harden the relay with no cloud service account, password/root login disabled,
-`GatewayPorts no`, no shell/PTY/agent/X11 forwarding for tunnel accounts, and
-per-user `AllowTcpForwarding remote`/`local`, `PermitListen 127.0.0.1:19334`, and
-`PermitOpen 127.0.0.1:19334` respectively. Restrict SSH ingress to the desktop and
-agent host addresses. The bearer credential grants control of all connected
-profiles: share it only with trusted agents, revoke by replacing both token files
-and restarting the publisher, and use the extension's Pause control to stop access.
-
-### Direct SSH forwarding
-
-Keep Chrome and the extension on your own computer. From that computer, open a reverse SSH tunnel to a host in your SSH configuration:
-
-```sh
-node bin/cli.js tunnel hetzner
-```
-
-Leave that command running. It forwards the bridge to a loopback listener on the remote host. On the remote host, install this project and run:
-
-```sh
-node bin/cli.js --no-autostart --browser main call tabs.list '{}'
-```
-
-For a remote MCP client, set `AGENT_BROWSER_AUTOSTART=0` in its environment, or put `--no-autostart` before `mcp` in the launch arguments. This prevents the remote agent from starting a separate bridge if the tunnel goes down. `tunnel hetzner --remote-port 19334` chooses another remote port; set `AGENT_BROWSER_PORT=19334` on the remote client to match. The remote host and its local processes gain browser control while the tunnel is open, so use a host you trust and keep the listener on loopback.
-
 ## Use from an agent
 
-Repository-local skills are available as [browser-control](skills/browser-control/SKILL.md) for local agents and [remote-browser-control](skills/remote-browser-control/SKILL.md) for agents on Hetzner or another SSH host. They resolve the CLI relative to this checkout and do not install anything into your agent configuration.
+Repository-local skills are available as [browser-control](skills/browser-control/SKILL.md) for local agents and [remote-browser-control](skills/remote-browser-control/SKILL.md) for agents on Hetzner or another machine. They resolve the CLI relative to this checkout and do not install anything into your agent configuration.
 
 Give any shell-capable agent the absolute path to this checkout and tell it to run commands such as:
 
@@ -380,7 +317,7 @@ The browser layer only observes: it uses a content script and `chrome.tabs.captu
 
 Any local process that can reach the running bridge can control the connected browser. Use it on a trusted computer with trusted local agents and processes. An agent can read page content and perform actions using your account, including actions with real consequences. This tool does not ask for confirmation before each action. Use **Pause** in the extension to pause browser access: browser calls can restart a stopped bridge automatically.
 
-The bridge binds to `127.0.0.1`, requires the expected loopback Host, and rejects HTTP requests carrying an Origin header. Extension WebSockets require a Chrome extension origin and a `hello` handshake with protocol version `1`. Multiple profiles connect using independent browser IDs. A legacy `auth` handshake is accepted temporarily so an already installed extension can transition; its token is not validated. These checks restrict website access and do not authenticate local processes. Keep the service off public interfaces; for remote access, use the loopback SSH forwarding described above with a trusted host.
+The bridge binds to `127.0.0.1`, requires the expected loopback Host, and rejects HTTP requests carrying an Origin header. Extension WebSockets require a Chrome extension origin and a `hello` handshake with protocol version `1`. Multiple profiles connect using independent browser IDs. A legacy `auth` handshake is accepted temporarily so an already installed extension can transition; its token is not validated. These checks restrict website access and do not authenticate local processes. Keep the service off public interfaces; for remote access, use device login and the outbound desktop daemon described above.
 
 Chrome restricts debugging of internal pages and some protected tabs. Other debuggers, including DevTools, can interfere with attachment. Browser command failures and disconnects can occur after an action has already executed; inspect the page before retrying a consequential command.
 

@@ -73,7 +73,7 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
         // failures belong to the running bridge and must not spawn another one.
         const code = error.cause?.cause?.code;
         if (code === 'ECONNREFUSED') {
-          if (!autoStart) throw new Error('Browser bridge is unavailable. Check the SSH tunnel or start the local bridge.', { cause: error });
+          if (!autoStart) throw new Error('Browser bridge is unavailable. Check the desktop daemon or start the local bridge.', { cause: error });
           if (!launched) { launched = true; await launcher(port); }
         } else if (answered && error.cause?.name === 'TimeoutError' && Date.now() >= deadline) {
           // The final probe only gets the time left before the deadline. A bridge

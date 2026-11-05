@@ -105,7 +105,7 @@ test('remote clients never launch a missing bridge when waiting without autostar
   await new Promise(resolve => reservation.close(resolve));
   let launches = 0;
   const client = createClient({ port, autoStart: false, waitForConnection: true, launcher: () => { launches++; } });
-  await assert.rejects(client.call('tabs.list'), /Check the SSH tunnel/);
+  await assert.rejects(client.call('tabs.list'), /Check the desktop daemon/);
   assert.equal(launches, 0);
 });
 
