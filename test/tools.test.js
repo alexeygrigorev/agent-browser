@@ -67,6 +67,13 @@ test('shared browser SSO checks signed identity, transaction binding, nonce and 
   const raw = await readFile(join(f.dir, 'state.json'), 'utf8'); assert.ok(!raw.includes(login.cookie.split('=')[1]), 'sessions are stored as hashes');
 });
 
+test('unsolicited OAuth callbacks do not write state and are rate limited', async t => {
+  const f = await fixture(t); let response;
+  for (let i = 0; i < 121; i++) response = await fetch(f.base + '/auth/callback?state=unknown&code=invented', { redirect: 'manual' });
+  assert.equal(response.status, 429);
+  await assert.rejects(readFile(join(f.dir, 'state.json')), error => error.code === 'ENOENT');
+});
+
 test('device grants require browser approval, resist CSRF, slow polls, expire, deny and consume once', async t => {
   const f = await fixture(t); const s = (await f.browserLogin()).cookie; const g = await f.start();
   assert.equal((await f.poll(g)).body.error, 'authorization_pending'); assert.equal((await f.poll(g)).body.error, 'slow_down');
