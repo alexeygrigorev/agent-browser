@@ -12,14 +12,14 @@ export function getPort(value = process.env.AGENT_BROWSER_PORT || '19333') {
   return port;
 }
 
-export function createClient({ port = getPort(), timeout = 40000, autoStart = false, waitForConnection = autoStart, connectTimeout = 35000, launcher = launchBridge, browser = process.env.AGENT_BROWSER_NAME, token, baseUrl } = {}) {
+export function createClient({ port = getPort(), timeout = 40000, autoStart = false, waitForConnection = autoStart, connectTimeout = 35000, launcher = launchBridge, browser = process.env.AGENT_BROWSER_NAME, token, baseUrl, fetchImpl = globalThis.fetch } = {}) {
   if (baseUrl && autoStart) throw new Error('Remote endpoints cannot autostart a local bridge');
   const endpoint = baseUrl ? baseUrl.replace(/\/$/, '') : `http://127.0.0.1:${port}`;
   const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
   async function request(path, body, requestTimeout = timeout) {
     let response;
     try {
-      response = await fetch(`${endpoint}${path}`, {
+      response = await fetchImpl(`${endpoint}${path}`, {
         method: body === undefined ? 'GET' : 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -50,7 +50,7 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
     await ensureReady(selectedBrowser, true);
     const query = new URLSearchParams({ name: basename(path) });
     if (selectedBrowser !== undefined) query.set('browser', selectedBrowser);
-    const response = await fetch(`${endpoint}/files?${query}`, {
+    const response = await fetchImpl(`${endpoint}/files?${query}`, {
       method: 'POST', headers: { 'Content-Type': 'application/octet-stream', ...authHeaders },
       body: createReadStream(path), duplex: 'half', signal: AbortSignal.timeout(timeout)
     });
@@ -103,7 +103,7 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
         await ensureReady(selectedBrowser);
         const query = new URLSearchParams();
         if (selectedBrowser !== undefined) query.set('browser', selectedBrowser);
-        const response = await fetch(`${endpoint}/downloads/${id}/file${query.size ? `?${query}` : ''}`, { headers: authHeaders, signal: AbortSignal.timeout(timeout) });
+        const response = await fetchImpl(`${endpoint}/downloads/${id}/file${query.size ? `?${query}` : ''}`, { headers: authHeaders, signal: AbortSignal.timeout(timeout) });
         if (!response.ok) {
           const payload = await response.json();
           throw new Error(typeof payload.error === 'string' ? payload.error : payload.error?.message || `Download HTTP ${response.status}`);

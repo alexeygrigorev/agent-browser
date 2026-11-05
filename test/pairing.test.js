@@ -1,0 +1,84 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { mkdtemp, rm, writeFile, readFile, symlink, utimes } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createToolsServer } from '../src/tools/server.js';
+import { connectDaemon } from '../src/tools/daemon.js';
+import { ensureIdentity, pairController } from '../src/tools/identity.js';
+import { pairedFetch } from '../src/tools/paired-client.js';
+import { createClient } from '../src/client.js';
+import { createFiles } from '../src/files.js';
+import { hash, secret } from '../src/tools/auth.js';
+
+const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+const close = server => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); };
+test('paired TLS authenticates endpoints, enforces desktop grants and streams staged uploads', { timeout: 20000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'paired-browser-'));
+  const daemonIdentity = await ensureIdentity(join(dir, 'daemon.json'));
+  const controllerIdentity = await ensureIdentity(join(dir, 'controller.json'));
+  const wrongIdentity = await ensureIdentity(join(dir, 'wrong.json'));
+  const trustFile = join(dir, 'trust.json');
+  await pairController({ certificate: controllerIdentity.certificate, profiles: ['orin'], mode: 'interact', origins: ['https://example.test'], file: trustFile });
+  const audit = []; const tools = await createToolsServer({ file: join(dir, 'state.json'), origin: 'https://tools.example', clientId: 'test', onAudit: e => audit.push(e) });
+  const token = secret(), daemonToken = secret();
+  tools.auth.state.grants.synthetic = { expires: Date.now() + 600000 };
+  tools.auth.state.credentials[hash(token)] = { owner: 'a', role: 'controller', grantId: 'synthetic', tools: ['browser'], expires: Date.now() + 600000 };
+  tools.auth.state.credentials[hash(daemonToken)] = { owner: 'a', device: 'desktop', role: 'daemon', tools: ['browser'], expires: Date.now() + 600000 };
+  const base = `http://127.0.0.1:${(await tools.listen(0)).port}`;
+  const seen = [];
+  const bridge = http.createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    const b = JSON.parse(Buffer.concat(chunks).toString() || '{}'); seen.push(b);
+    const result = b.method === 'tabs.list' ? [{ id: 1, url: 'https://example.test/' }, { id: 2, url: 'file:///private.txt' }]
+      : b.method === 'browsers.list' ? [{ name: 'orin' }, { name: 'main' }] : b.params;
+    res.end(JSON.stringify(req.url.startsWith('/status') ? { connected: true } : { result }));
+  });
+  const bridgePort = await listen(bridge); const files = createFiles({ directory: join(dir, 'uploads'), maxBytes: 1024 * 1024, maxStoredBytes: 2 * 1024 * 1024, maxFiles: 2, retentionMs: 10000 });
+  let daemon;
+  t.after(async () => { daemon?.terminate(); await tools.close(); await close(bridge); await rm(dir, { recursive: true, force: true }); });
+  await new Promise(resolve => { daemon = connectDaemon({ server: base, token: daemonToken, identity: daemonIdentity, trustFile, bridgePort, onReady: resolve, policyOptions: { files }, onAudit: () => {} }); });
+  const wire = [];
+  daemon.on('message', raw => { const frame = JSON.parse(raw); if (frame.type === 'data') wire.push(Buffer.from(frame.data, 'base64')); });
+  const options = { server: base, device: 'desktop', token, identity: controllerIdentity, daemonCertificate: daemonIdentity.certificate };
+  const fetchImpl = pairedFetch(options); const client = createClient({ baseUrl: base + '/browser/desktop', browser: 'orin', fetchImpl });
+  assert.deepEqual(await client.call('browsers.list'), [{ name: 'orin' }]);
+  assert.deepEqual(await client.call('tabs.list'), [{ id: 1, url: 'https://example.test/' }]);
+  await client.call('page.click', { tabId: 1, x: 10, y: 20 });
+  await client.call('page.type', { tabId: 1, selector: '#text', text: 'synthetic-private-text-38d9' });
+  assert.ok(!Buffer.concat(wire).includes(Buffer.from('synthetic-private-text-38d9')), 'gateway carries ciphertext rather than browser commands');
+  await assert.rejects(client.call('page.click', { tabId: 1, x: 1, y: 2 }, { browser: 'main' }), /outside/);
+  await assert.rejects(client.call('cdp.send', { tabId: 1, method: 'DOM.setFileInputFiles' }), /outside/);
+  await assert.rejects(client.call('page.evaluate', { tabId: 1, expression: '1+1' }), /outside/);
+  await assert.rejects(client.call('page.snapshot', { tabId: 2 }), /local or browser-internal/);
+  await assert.rejects(client.call('page.upload', { tabId: 1, selector: '#file', files: [join(dir, 'controller.json')] }), /staged uploads/);
+  const input = join(dir, 'fixture.txt'); await writeFile(input, Buffer.alloc(512 * 1024, 65));
+  const staged = await client.stageFile(input); assert.equal(staged.size, 512 * 1024);
+  await client.call('page.upload', { tabId: 1, selector: '#file', files: [staged.path] });
+  assert.deepEqual(await readFile(staged.path), await readFile(input));
+  const before = seen.length;
+  const unpaired = createClient({ baseUrl: base + '/browser/desktop', browser: 'orin', fetchImpl: pairedFetch({ ...options, identity: wrongIdentity }) });
+  await assert.rejects(unpaired.call('tabs.list'));
+  const wrongServer = createClient({ baseUrl: base + '/browser/desktop', browser: 'orin', fetchImpl: pairedFetch({ ...options, daemonCertificate: wrongIdentity.certificate }) });
+  await assert.rejects(wrongServer.call('tabs.list'));
+  assert.equal(seen.length, before, 'failed TLS pairing never reaches browser bridge');
+  assert.equal((await fetch(base + '/browser/desktop/command', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: '{}' })).status, 404);
+  await pairController({ certificate: controllerIdentity.certificate, profiles: ['orin'], mode: 'inspect', file: trustFile });
+  await client.call('tabs.list'); await assert.rejects(client.call('page.click', { tabId: 1, x: 1, y: 2 }), /outside/);
+  await pairController({ certificate: controllerIdentity.certificate, profiles: ['orin'], mode: 'interact', origins: ['*'], file: trustFile });
+  await client.call('tabs.create', { url: 'https://another.example/' });
+  await writeFile(trustFile, '{}'); await assert.rejects(client.call('tabs.list'));
+  assert.ok(!JSON.stringify(audit).includes(token));
+});
+
+test('staged uploads reject escaping symlinks and enforce cumulative quotas and retention', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'upload-policy-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  let clock = Date.now(); const files = createFiles({ directory: join(dir, 'uploads'), maxBytes: 8, maxStoredBytes: 16, maxFiles: 2, retentionMs: 1000, now: () => clock });
+  const source = value => (async function* () { yield Buffer.from(value); })();
+  const a = await files.stage(source('12345678'), 'a.txt'); await files.validateStaged([a.path]);
+  const outside = join(dir, 'outside.txt'); await writeFile(outside, 'synthetic'); await assert.rejects(files.validateStaged([outside]));
+  try { const link = join(a.path, '..', 'link.txt'); await symlink(outside, link); await assert.rejects(files.validateStaged([link])); } catch (e) { if (!['EPERM', 'ENOTSUP'].includes(e.code)) throw e; }
+  await files.stage(source('12345678'), 'b.txt'); await assert.rejects(files.stage(source('1'), 'c.txt'), /quota/);
+  clock += 2000; await files.stage(source('new'), 'new.txt'); await assert.rejects(readFile(a.path), { code: 'ENOENT' });
+});

@@ -18,6 +18,8 @@ ReadWritePaths=/var/lib/dtc-tools
 UMask=0077
 MemoryMax=384M
 TasksMax=64
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=120
 
 [Install]
 WantedBy=multi-user.target
