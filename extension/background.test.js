@@ -23,12 +23,14 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
     [8, { id: 8, windowId: 1, title: 'Other', url: 'https://example.org', active: false, groupId: -1 }],
     [9, { id: 9, windowId: 2, title: 'Second window', url: 'https://example.net', active: false, groupId: -1 }]
   ]);
+  const windows = new Map([[1, { id: 1, type: 'normal', focused: true }], [2, { id: 2, type: 'normal', focused: false }], [3, { id: 3, type: 'popup', focused: false }]]);
   const nativeGroups = new Map(initialGroups.map(group => [group.id, { ...group }]));
   let groupId = 100;
   let groupRemoved;
   let tabCreated, tabRemoved, tabActivated;
   const downloads = new Map([[11, { id: 11, url: 'https://example.com/file.txt', filename: 'C:\\Downloads\\file.txt', state: 'in_progress', exists: true, bytesReceived: 4, totalBytes: 12, mime: 'text/plain' }]]);
   const chrome = {
+    windows: { get: async id => ({ ...windows.get(id) }), getAll: async () => [...windows.values()].map(window => ({ ...window })) },
     storage: { local: {
       get: async () => ({ ...stored }), set: async value => Object.assign(stored, value),
       remove: async key => { delete stored[key]; }
@@ -64,6 +66,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
       remove: async id => { tabs.delete(id); },
       group: async params => {
         calls.push(['tabs.group', params]);
+        if (params.tabIds.some(id => windows.get(tabs.get(id).windowId)?.type !== 'normal')) throw new Error('Grouping is not supported by tabs in this window.');
         const id = params.groupId ?? groupId++;
         if (!nativeGroups.has(id)) nativeGroups.set(id, { id, windowId: params.createProperties.windowId, title: '', color: 'grey', collapsed: false });
         for (const tabId of params.tabIds) tabs.get(tabId).groupId = id;
@@ -161,8 +164,13 @@ test('lists window.open tabs with their opener and supports page, navigation, an
 
   const popup = (await command('tabs.list')).result.find(tab => tab.id === 10);
   assert.equal(popup.openerTabId, 7);
+  assert.equal(popup.windowType, 'popup');
+  assert.equal(popup.windowFocused, false);
   assert.equal((await command('page.evaluate', { tabId: popup.id, expression: 'document.title' })).result, 'evaluated');
   assert.ok(calls.some(([method, target]) => method === 'attach' && target.tabId === 10));
+  assert.ok(!calls.some(([method, params]) => method === 'tabs.group' && params.tabIds.includes(10)), 'auth popup remains in its own window');
+  assert.equal((await command('groups.release', { tabId: popup.id })).result.released, true);
+  assert.ok(calls.some(([method, target]) => method === 'detach' && target.tabId === 10), 'ungrouped popup debugger is released');
 
   const navigated = await command('tabs.navigate', { tabId: popup.id, url: 'https://example.com/continued' });
   assert.equal(navigated.result.url, 'https://example.com/continued');

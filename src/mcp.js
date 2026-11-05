@@ -24,7 +24,7 @@ const definitions = [
   ['extension.reload', 'Reload the unpacked Chrome extension from disk and wait until it reconnects; reports the new code hash', object({})],
   ['browser.info', 'Show the connected browser identity and nickname', object({})],
   ['browser.rename', 'Persist a nickname for the connected browser', object({ name: string('Browser nickname') })],
-  ['tabs.list', 'List open browser tabs', object({})],
+  ['tabs.list', 'List tabs across every window in the selected profile, including authentication popups. Returns windowType, windowId and openerTabId; refresh after a sign-in action opens a new window.', object({})],
   ['tabs.create', 'Create a browser tab', object({ url: string('URL to open'), active: { type: 'boolean' } })],
   ['tabs.close', 'Close a browser tab', object({ tabId })],
   ['tabs.navigate', 'Navigate an existing tab', object({ tabId, url: string('Destination URL') })],
