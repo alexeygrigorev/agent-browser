@@ -86,7 +86,7 @@ Upload a file from the agent's computer into a page's file input:
 node bin/cli.js --browser main upload 123 'input[type=file]' ./report.pdf
 ```
 
-The client transfers the file to the desktop bridge and selects it in the page; submit the form separately when intended. This works through the HTTPS gateway too, so remote agents do not need a desktop filesystem path. Multiple files may follow the selector. MCP `page_upload` performs the same transfer. Generic `page.upload` calls instead require paths that already exist on the desktop.
+The client transfers the file to the desktop bridge and selects it in the page; submit the form separately when intended. This works through the HTTPS gateway too, so remote agents do not need a desktop filesystem path. Multiple files may follow the selector. MCP `page_upload` performs the same transfer. Generic local `page.upload` calls accept desktop file paths; remote calls accept only paths returned by staged uploads.
 
 Staging accepts up to 64 MiB per file. Copies remain under `~/.agent-browser/uploads` on the desktop so a page can submit them later. CLI and MCP upload read specific client paths; generic page upload validates specific desktop paths. This does not provide a general filesystem browsing interface.
 
@@ -138,7 +138,7 @@ node bin/cli.js --browser main record list
 node bin/cli.js --browser main record stop RECORDING_ID
 ```
 
-Use the recording ID returned by `record start`. Install FFmpeg on the computer running the bridge and make `ffmpeg` available on PATH, or set `AGENT_BROWSER_FFMPEG` to its executable path. Recording captures browser frames without audio. With a remote agent, recording output paths refer to the computer running the bridge.
+Use the recording ID returned by `record start`. Install FFmpeg on the computer running the bridge and make `ffmpeg` available on PATH, or set `AGENT_BROWSER_FFMPEG` to its executable path. Recording captures browser frames without audio and requires local access; the remote daemon does not expose recording.
 
 ## Agents on Hetzner or another machine
 

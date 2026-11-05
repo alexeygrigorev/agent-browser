@@ -10,6 +10,7 @@ import { byteChannel } from './channel.js';
 import { sendFrame } from './server.js';
 import { json, jsonBody, fail } from './auth.js';
 import { createAudit } from './audit.js';
+import { privateBrowserHome } from './private-store.js';
 
 export function connectDaemon({ server, token, identity, bridgePort = 19333, trustFile = trustPath(), onReady = () => {}, policyOptions = {}, onAudit }) {
   if (!identity) throw new Error('A local daemon identity is required');
@@ -80,6 +81,7 @@ export function connectDaemon({ server, token, identity, bridgePort = 19333, tru
   return ws;
 }
 export async function runDaemon({ credentialFile, bridgePort = 19333 }) {
+  await privateBrowserHome();
   const { loadCredential } = await import('./cli.js');
   const identity = await ensureIdentity(identityPath('daemon'));
   let stopping = false, ws;

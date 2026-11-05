@@ -90,6 +90,12 @@ lifetime. Audits contain operation names, outcomes, hashed owners, certificate
 fingerprints and byte counts; never page URLs, contents, selectors, bodies,
 tokens or cookies. Production logs must be bounded and rotated.
 
+The browser's private home, authentication directory and upload staging
+directories use owner-only permissions, including explicit Windows ACLs;
+POSIX mode flags alone do not restrict Windows access. Individual credentials
+and identities are written atomically into private files. These are browser
+service permissions, not changes to unrelated agents' OS accounts.
+
 ## Remaining trust
 
 General Orin interaction can read sensitive pages and submit real account

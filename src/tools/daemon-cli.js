@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { pairController, readTrust, trustPath } from './identity.js';
-import { writePrivate } from './private-store.js';
+import { writePrivate, privateBrowserHome } from './private-store.js';
 
 export async function daemonPairing(args) {
+  await privateBrowserHome();
   const [action, ...rest] = args; const o = { profiles: 'orin', mode: 'inspect', origins: '' };
   for (let i = 0; i < rest.length; i += 2) {
     const key = { '--certificate-file': 'certificateFile', '--fingerprint': 'fingerprint', '--profiles': 'profiles', '--mode': 'mode', '--origins': 'origins' }[rest[i]];

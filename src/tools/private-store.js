@@ -2,6 +2,18 @@ import { mkdir, open, rename, chmod, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+export async function privateDirectory(directory) {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (process.platform === 'win32') execFileSync('icacls.exe', [directory, '/inheritance:r', '/grant:r', `${process.env.USERDOMAIN}\\${process.env.USERNAME}:(OI)(CI)F`], { stdio: 'ignore', windowsHide: true });
+  else await chmod(directory, 0o700);
+}
+export async function privateBrowserHome() {
+  const root = join(homedir(), '.agent-browser');
+  await privateDirectory(root); await privateDirectory(join(root, 'tools'));
+}
 
 export async function writePrivate(file, value) {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });

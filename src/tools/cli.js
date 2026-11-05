@@ -7,7 +7,7 @@ import { deviceName, hash, secret } from './auth.js';
 import { saveProfile } from '../remote.js';
 import { ensureIdentity, loadIdentity, identityPath, publicIdentity } from './identity.js';
 import { pairedFetch } from './paired-client.js';
-import { writePrivate } from './private-store.js';
+import { writePrivate, privateBrowserHome } from './private-store.js';
 
 export const credentialPath = daemon => join(homedir(), '.agent-browser', 'tools', daemon ? 'daemon.json' : 'controller.json');
 export function serverUrl(raw = 'https://tools.dtcdev.click') {
@@ -37,6 +37,7 @@ export async function remoteOptions(profile) {
   return { baseUrl: `${profile.server}/browser/${profile.device}`, fetchImpl: pairedFetch({ server: c.server, device: profile.device, token: c.access_token, identity, daemonCertificate: c.daemonCertificate }) };
 }
 export async function runAuth(args) {
+  await privateBrowserHome();
   const [action, ...rest] = args; const options = { server: 'https://tools.dtcdev.click', device: 'desktop' };
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '--daemon') { options.daemon = true; continue; }
