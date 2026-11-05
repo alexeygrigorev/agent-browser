@@ -1,78 +1,83 @@
 ---
 name: remote-browser-control
-description: Let an agent on Hetzner or another SSH host control existing signed-in Chrome on the user's computer through a loopback reverse SSH tunnel. Use for remote agent access rather than local browser control.
+description: Control the desktop's existing signed-in Chrome from another machine through tools.dtcdev.click, using shared DTC device login and an outbound desktop daemon.
 ---
 
-Resolve the repository root as `../..` from this skill directory. Run commands there or supply an absolute `bin/cli.js` path. The desktop keeps Chrome and its unpacked extension; the remote host runs Node.js 22+ and this repository's CLI/MCP client. No remote browser or cookie export is needed.
+Resolve the repository root as `../..` from this skill directory. Run commands
+there or supply an absolute `bin/cli.js` path. The desktop keeps Chrome and the
+extension; the controlling machine runs Node.js 22+ and this CLI/MCP client.
 
-## Configured authenticated relay (preferred)
-
-If a saved remote profile exists (`node bin/cli.js remote list`), use it:
+## Authenticate a controlling machine
 
 ```sh
+node bin/cli.js auth login --device desktop
+node bin/cli.js auth status
 node bin/cli.js remote check desktop
-node bin/cli.js --remote desktop --browser main call tabs.list '{}'
+node bin/cli.js --remote desktop --browser orin call tabs.list '{}'
+```
+
+The CLI prints a verification URL and code. Open that URL in the trusted browser,
+sign in through the shared DTC Google/Cognito login, verify the request label and
+role, then approve only the code for the login you started. Each machine gets its
+own private, revocable credential. Do not copy credentials between machines.
+`--server` chooses another HTTPS gateway; `--name` chooses the saved remote alias.
+
+`--remote NAME` loads the HTTPS endpoint and controller credential-file location
+from `~/.agent-browser/remotes.json`. It authenticates every request and disables
+local bridge autostart. Never fall back to a local browser, another profile, an
+unauthenticated endpoint or SSH when remote access fails.
+
+## Desktop daemon
+
+The desktop authorizes its separate publication credential once:
+
+```sh
+node bin/cli.js auth login --daemon --device desktop
+node bin/cli.js daemon
+```
+
+Keep `daemon` running under the desktop's logged-in user; it reconnects over
+outbound WSS. No SSH tunnel or persistent process on the controlling machine is
+needed. The installed Windows task is **Agent Browser Daemon**. The desktop must
+be awake, signed in and running Chrome. A daemon credential can publish only its
+named device; a controller can access only devices owned by the same signed-in
+identity. Both roles expire after 30 days. Renew using device login, and revoke
+from https://tools.dtcdev.click/browser or `auth logout` (`--daemon` for that role).
+
+If offline, inspect the desktop task and gateway `dtc-tools.service` logs and
+repair the failing side. Never display credential contents. The gateway runs on
+the existing Frankfurt VM; deployment and the shared auth boundary for future
+tool adapters are documented in `deploy/tools/README.md`. It is trusted to relay
+browser data. Chrome profiles and cookies stay on the desktop.
+
+## Browser selection and actions
+
+Use `--browser NAME_OR_ID` on each command. Explicit selection fails rather than
+switching profiles. One daemon carries all desktop profiles; never copy the
+extension or profile directories, edit ports or start a daemon per profile.
+Use `browsers`, then `tabs.list`, then `page.snapshot` before interacting. Inspect
+the page before retrying a timed-out consequential action; it may have executed.
+The visible agent cursor and click pulse follow real CDP pointer input.
+
+```sh
+node bin/cli.js --remote desktop --browser orin click TAB_ID SELECTOR
+node bin/cli.js --remote desktop --browser orin hover TAB_ID X Y
+node bin/cli.js --remote desktop --browser orin screenshot TAB_ID --output shot.png
+node bin/cli.js --remote desktop --browser orin upload TAB_ID 'input[type=file]' ./report.pdf
+node bin/cli.js --remote desktop --browser orin download URL
+node bin/cli.js --remote desktop --browser orin downloads wait DOWNLOAD_ID
+node bin/cli.js --remote desktop --browser orin downloads save DOWNLOAD_ID --output ./report.pdf
+node bin/cli.js --remote desktop --browser orin extension
 node bin/cli.js --remote desktop --browser orin mcp
 ```
 
-`--remote NAME` reads the profile's port and private token file, authenticates
-commands and file transfers, and disables local bridge autostart. Never fall back
-to a local browser or an unauthenticated endpoint when remote access fails.
-The persistent desktop `remote publish NAME --reconnect` and agent-host
-`remote connect NAME --reconnect` processes must both be running. Inspect their
-service logs and restore the failed side. Do not display token files or private
-keys. The README documents setup, pinned host keys, forwarding-only SSH accounts,
-loopback ports, credential rotation and the trusted-relay boundary.
+Uploads stream files from the controlling machine and stage them on the desktop
+(up to 64 MiB each); submission is a separate authorized page action. Download
+metadata's absolute `filename` belongs to the desktop; `downloads save` writes a
+new file on the controlling machine. Existing outputs are not overwritten.
+Screenshots save on the controlling machine; recording paths belong to the
+desktop bridge. Recording requires desktop FFmpeg. See README for all methods.
 
-The remaining examples describe legacy direct SSH forwarding; with a saved
-profile, replace `--no-autostart` with `--remote NAME` for every command.
-
-## Desktop tunnel
-
-With dependencies and the Chrome extension installed, use the user's SSH host alias:
-
-```sh
-node bin/cli.js tunnel hetzner
-```
-
-Keep this foreground desktop SSH session running. It starts the local bridge if necessary and forwards it to a loopback listener on the remote host. Use existing authorized SSH configuration; do not modify SSH server settings or expose a public bridge listener.
-
-## Remote agent
-
-Clone this repository and run `npm install` if needed. On the remote host:
-
-```sh
-node bin/cli.js --no-autostart browsers
-node bin/cli.js --no-autostart --browser main call tabs.list '{}'
-node bin/cli.js --no-autostart --browser orin call tabs.list '{}'
-```
-
-Always disable remote autostart with `--no-autostart` or `AGENT_BROWSER_AUTOSTART=0`: a failed tunnel must not launch an unrelated remote bridge. Honor the requested name/ID and fail rather than switch browsers. Restore the desktop SSH tunnel on connection failure.
-
-The same single tunnel carries all Chrome profiles through one desktop bridge. Install the same extension directory in each desktop profile; each keeps an independent stable UUID. No copied extension, edited port, additional service, or additional tunnel is needed per profile. List with `browsers`, then assign requested aliases using `--no-autostart --browser ID browser name NAME`. Names can extend beyond `main` and `orin`; offline aliases remain listed with `connected:false`.
-
-Select a nickname/ID on every remote command or MCP tool's `browser` property when multiple profiles are present. Different profiles support concurrent work; each profile serializes its own actions. Consult the current repository and tool definitions rather than assuming the initial single-profile implementation. An old desktop extension needs one reload after upgrading to activate UUID identity, not a Connect click during normal work. After the desktop checkout is updated, `--no-autostart --browser NAME extension reload` reloads the desktop extension from the remote side and reports its new code hash. `--browser NAME extension` shows whether it matches (`extension.current` compares against the desktop bridge's checkout).
-
-For another remote port, run `tunnel hetzner --remote-port 19334` on the desktop and set `AGENT_BROWSER_PORT=19334` remotely. PowerShell: `$env:AGENT_BROWSER_PORT='19334'`. POSIX: `export AGENT_BROWSER_PORT=19334`.
-
-## MCP and actions
-
-Launch `node /absolute/repo/bin/cli.js --no-autostart --browser main mcp` remotely. Client environment can instead specify `AGENT_BROWSER_AUTOSTART=0`, `AGENT_BROWSER_PORT`, and `AGENT_BROWSER_NAME`. MCP tools accept a `browser` selector.
-
-Use `tabs.list`, then `page.snapshot` with the tab ID before interacting. Preserve JSON with stdin in PowerShell:
-
-```powershell
-'{"tabId":123}' | node .\bin\cli.js --no-autostart --browser main call page.snapshot --stdin
-```
-
-Upload a remote-agent file with `node bin/cli.js --no-autostart --browser main upload 123 'input[type=file]' ./report.pdf`. The CLI transfers it through the tunnel and selects the desktop file input; submit the form separately if requested. MCP `page_upload` does the same staging. Generic `page.upload` requires desktop-local paths.
-
-Each staged file may be up to 64 MiB. Copies remain in desktop `~/.agent-browser/uploads` for later submission; this transfers specific requested files, not general filesystem browsing access.
-
-Download using `node bin/cli.js --no-autostart --browser main download URL`, then `downloads wait DOWNLOAD_ID` with the same global flags. Metadata's absolute `filename` belongs to the desktop Chrome computer, not the remote host.
-
-Retrieve the bytes remotely with `node bin/cli.js --no-autostart --browser main downloads save DOWNLOAD_ID --output ./report.pdf`. This creates a new file on the remote agent's computer without overwriting existing files. MCP `downloads_save` performs the same transfer; do not treat Chrome's desktop path as a remote filesystem path.
-
-Real mouse input works remotely too: `click 123 640 360`, `click 123 SELECTOR --button right`, `hover 123 SELECTOR|X Y`, and `mouse move|down|up 123 [X Y] [--button NAME]` (viewport CSS pixels; MCP `page_click`, `page_hover`, `page_mouse`). The CLI supports `screenshot 123 --output shot.png` and `record start 123 --output demo.webm`, followed by `record stop RECORDING_ID`. Screenshots are saved on the CLI computer, creating missing parent folders; recording paths belong to the desktop bridge computer. Silent sampled-frame WebM requires desktop FFmpeg with `libvpx-vp9` on PATH or `AGENT_BROWSER_FFMPEG`.
-
-The trusted remote host's local processes gain browser control while the tunnel is open. Keep listeners on loopback and close the SSH session when finished. Existing accounts remain signed in; browser actions must stay within the user's task.
+Existing logins permit real account actions; stay within the user's task.
+Use Pause in the extension to stop access to that profile. Do not export cookies
+or disturb unrelated tabs to establish access.
