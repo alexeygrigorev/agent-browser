@@ -1,4 +1,5 @@
-import { readFile, mkdir, writeFile, rename, unlink, chmod } from 'node:fs/promises';
+import { readFile, mkdir, open, rename, unlink, chmod } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { deviceLogin } from '../../vendor/dtc-device-login.mjs';
@@ -36,7 +37,17 @@ export async function runAuth(args) {
     if (!/^[A-Za-z0-9_-]{43}$/.test(result.access_token || '')) throw new Error('Invalid device credential');
     await mkdir(dirname(file), { recursive: true, mode: 0o700 });
     const temp = `${file}.${process.pid}.tmp`;
-    await writeFile(temp, JSON.stringify({ ...result, server }, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); await rename(temp, file); await chmod(file, 0o600);
+    const staged = await open(temp, 'wx', 0o600);
+    try {
+      // Windows ignores POSIX mode bits: restrict the empty staging file before
+      // writing any credential, without changing permissions on its directory.
+      if (process.platform === 'win32') {
+        const identity = `${process.env.USERDOMAIN}\\${process.env.USERNAME}`;
+        execFileSync('icacls.exe', [temp, '/inheritance:r', '/grant:r', `${identity}:F`], { stdio: 'ignore', windowsHide: true });
+      }
+      await staged.writeFile(JSON.stringify({ ...result, server }, null, 2) + '\n');
+    } finally { await staged.close(); }
+    await rename(temp, file); await chmod(file, 0o600);
     if (!options.daemon) await saveProfile(options.name || options.device, { kind: 'tools', server, device: options.device, credentialFile: file });
     console.log(`Signed in as ${result.email} (${result.role}). Credential stored privately.`); return;
   }
