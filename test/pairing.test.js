@@ -11,6 +11,8 @@ import { pairedFetch } from '../src/tools/paired-client.js';
 import { createClient } from '../src/client.js';
 import { createFiles } from '../src/files.js';
 import { hash, secret } from '../src/tools/auth.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const close = server => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); };
@@ -43,6 +45,9 @@ test('paired TLS authenticates endpoints, enforces desktop grants and streams st
   daemon.on('message', raw => { const frame = JSON.parse(raw); if (frame.type === 'data') wire.push(Buffer.from(frame.data, 'base64')); });
   const options = { server: base, device: 'desktop', token, identity: controllerIdentity, daemonCertificate: daemonIdentity.certificate };
   const fetchImpl = pairedFetch(options); const client = createClient({ baseUrl: base + '/browser/desktop', browser: 'orin', fetchImpl });
+  const childConfig = join(dir, 'child.json'); await writeFile(childConfig, JSON.stringify(options));
+  const child = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `import {readFile} from 'node:fs/promises'; import {pairedFetch} from './src/tools/paired-client.js'; const o=JSON.parse(await readFile(process.argv[1],'utf8')); const r=await pairedFetch(o)(o.server+'/browser/desktop/status?browser=orin'); await r.json(); console.log('completed');`, childConfig], { timeout: 5000 });
+  assert.match(child.stdout, /completed/, 'one-shot CLI exits after its response without waiting for tunnel expiry');
   assert.deepEqual(await client.call('browsers.list'), [{ name: 'orin' }]);
   assert.deepEqual(await client.call('tabs.list'), [{ id: 1, url: 'https://example.test/' }]);
   await client.call('page.click', { tabId: 1, x: 10, y: 20 });

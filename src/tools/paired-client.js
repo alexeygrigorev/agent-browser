@@ -29,12 +29,13 @@ export function pairedFetch({ server, device, token, identity, daemonCertificate
       const agent = new http.Agent({ keepAlive: false }); agent.createConnection = () => secure;
       return await new Promise((resolve, reject) => {
         const request = http.request({ hostname: 'agent-browser.local', path: target.pathname.slice(prefix.length) + target.search, method: options.method || 'GET', headers: Object.fromEntries(Object.entries(options.headers || {}).filter(([key]) => key.toLowerCase() !== 'authorization')), agent }, response => {
-          response.once('end', () => { agent.destroy(); options.signal?.removeEventListener('abort', abort); });
-          response.once('error', () => agent.destroy());
+          const finish = () => { agent.destroy(); secure.destroy(); channel.destroy(); ws.terminate(); options.signal?.removeEventListener('abort', abort); };
+          response.once('end', finish);
+          response.once('error', finish);
           resolve(new Response(Readable.toWeb(response), { status: response.statusCode, headers: response.headers }));
         });
-        request.on('error', e => { agent.destroy(); reject(e); });
-        if (options.body && typeof options.body !== 'string' && !Buffer.isBuffer(options.body)) Readable.from(options.body).pipe(request);
+        request.on('error', e => { agent.destroy(); abort(); reject(e); });
+        if (options.body && typeof options.body !== 'string' && !Buffer.isBuffer(options.body)) Readable.from(options.body).on('error', e => request.destroy(e)).pipe(request);
         else request.end(options.body);
       });
     } catch (error) { abort(); options.signal?.removeEventListener('abort', abort); throw error; }
