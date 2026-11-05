@@ -50,7 +50,7 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
     const after = await reconnected;
     return { reloaded: true, before, ...extensionInfo(after) };
   }
-  // SSH reverse forwards may use a different loopback port on the remote host.
+  // Local clients and disposable test bridges may use different loopback ports.
   const localHost = req => /^127\.0\.0\.1(?::([1-9][0-9]{0,4}))?$/.test(req.headers.host || '') && Number((req.headers.host || '').split(':')[1] || 80) <= 65535;
   const metadata = browser => ({ id: browser.id, name: browser.name || null, connected: true });
   const select = selector => {

@@ -35,5 +35,4 @@ adapter and explicit credential scopes against this same auth layer; do not
 grant browser credentials new tool permissions implicitly. No PocketShell
 runtime is deployed by this change.
 
-After cutover, disable the old desktop SSH publisher task and Hetzner tunnel
-service. SSH remains an infrastructure administration channel only.
+SSH is an infrastructure administration channel only. Browser traffic uses HTTPS/WSS.
