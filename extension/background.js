@@ -17,6 +17,9 @@ const managedGroups = new Map();
 let groupQueue = Promise.resolve();
 const idleTabs = new Map();
 const busyTabs = new Map();
+const commands = new Map();
+const pendingCdp = new Map();
+const CDP_TIMEOUT_MS = 20000;
 let tabIdleMinutes = 15;
 const saveIdleTabs = () => chrome.storage.session.set({ idleTabs: [...idleTabs] });
 async function touchIdleTab(tabId, create = false) {
@@ -76,16 +79,41 @@ async function attach(tabId) {
       await manageTab(tabId);
       if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
       await chrome.debugger.attach({ tabId }, '1.3');
+      if (!enabled || requestedGeneration !== generation) {
+        chrome.debugger.detach({ tabId }).catch(() => {});
+        throw new Error('Browser access was disconnected');
+      }
       attached.add(tabId);
     })().finally(() => initializing.delete(tabId)));
     await initializing.get(tabId);
   }
 }
 async function cdp(tabId, method, params = {}) {
+  const requestedGeneration = activeGeneration;
   if (!enabled || activeGeneration !== generation) throw new Error('Browser access was disconnected');
-  await attach(tabId);
-  if (!enabled || activeGeneration !== generation) throw new Error('Browser access was disconnected');
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+  const id = crypto.randomUUID();
+  let timer;
+  pendingCdp.set(id, { tabId, method, startedAt: Date.now() });
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      // A client HTTP timeout cannot cancel Chrome work. Reject this await so
+      // multi-step actions stop, and invalidate work already queued behind it.
+      if (requestedGeneration === generation) generation++;
+      attached.delete(tabId);
+      chrome.debugger.detach({ tabId }).catch(() => {});
+      reject(new Error(`CDP ${method} timed out after ${CDP_TIMEOUT_MS}ms; action may have executed; queued work cancelled`));
+    }, CDP_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([(async () => {
+      await attach(tabId);
+      if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
+      return chrome.debugger.sendCommand({ tabId }, method, params);
+    })(), deadline]);
+  } finally {
+    clearTimeout(timer);
+    pendingCdp.delete(id);
+  }
 }
 async function evaluate(tabId, expression) {
   const response = await cdp(tabId, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
@@ -292,6 +320,10 @@ async function mouse(tabId, type, { x, y }, { button = 'left', clickCount = 1 } 
 }
 
 async function dispatch(method, params = {}) {
+  if (method === 'runtime.info') return {
+    commands: [...commands.values()], cdp: [...pendingCdp.values()],
+    generation, connected: !!socket && socket.readyState === WebSocket.OPEN
+  };
   if (method === 'extension.info') return { version: chrome.runtime.getManifest().version, code };
   if (method === 'extension.reload') {
     // Reply first; the bridge then waits for the reloaded worker to reconnect.
@@ -439,9 +471,11 @@ function connect() {
     if (message.type === 'pong') return;
     if (!enabled || !message.id || typeof message.method !== 'string') return;
     const requestedGeneration = generation;
+    commands.set(message.id, { method: message.method, ...(Number.isInteger(message.params?.tabId) ? { tabId: message.params.tabId } : {}), queuedAt: Date.now(), startedAt: null });
     try {
       const execute = async () => {
         if (!enabled || requestedGeneration !== generation) throw new Error('Browser access was disconnected');
+        commands.get(message.id).startedAt = Date.now();
         activeGeneration = requestedGeneration;
         const id = message.params?.tabId;
         if (Number.isInteger(id)) busyTabs.set(id, (busyTabs.get(id) || 0) + 1);
@@ -458,13 +492,15 @@ function connect() {
       // Transfers and dialog handling must not wait behind page actions; a dialog
       // can be the reason an earlier navigation or tab close is still waiting.
       // Reloading is the way out of a stuck queue, so it never waits either.
-      const bypassQueue = ['downloads.wait', 'dialogs.handle', 'extension.info', 'extension.reload'].includes(message.method);
+      const bypassQueue = ['downloads.wait', 'dialogs.handle', 'extension.info', 'extension.reload', 'runtime.info'].includes(message.method);
       const work = bypassQueue ? execute() : commandQueue.then(execute);
       if (!bypassQueue) commandQueue = work.catch(() => {});
       const result = await work;
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: message.id, result: result ?? null }));
     } catch (error) {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: message.id, error: error.message }));
+    } finally {
+      commands.delete(message.id);
     }
   };
   ws.onerror = () => { status = 'Bridge unavailable; retrying automatically'; };
