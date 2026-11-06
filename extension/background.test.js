@@ -191,6 +191,31 @@ test('handles a JavaScript dialog while a page action is blocked on the command 
   await click;
 });
 
+test('a hung CDP call exposes safe diagnostics, cancels queued actions and releases the queue', async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const { calls, socket, command, runTimer } = await setup({ beforeCommand: method => method === 'Input.dispatchMouseEvent' ? blocked : undefined });
+  const click = socket.onmessage({ data: JSON.stringify({ id: 'click', method: 'page.click', params: { tabId: 7, x: 10, y: 20 } }) });
+  await new Promise(resolve => setImmediate(resolve));
+  const queued = socket.onmessage({ data: JSON.stringify({ id: 'queued', method: 'page.type', params: { tabId: 8, text: 'private payload must not appear in diagnostics' } }) });
+  const diagnostic = (await command('runtime.info')).result;
+  assert.equal(diagnostic.commands.find(item => item.method === 'page.click').tabId, 7);
+  assert.equal(diagnostic.commands.find(item => item.method === 'page.type').startedAt, null);
+  assert.equal(diagnostic.cdp[0].method, 'Input.dispatchMouseEvent');
+  assert.ok(!JSON.stringify(diagnostic).includes('private payload'));
+  await runTimer(20000);
+  await Promise.all([click, queued]);
+  assert.match(socket.sent.find(item => item.id === 'click').error, /CDP Input.dispatchMouseEvent timed out/);
+  assert.match(socket.sent.find(item => item.id === 'queued').error, /disconnected/);
+  assert.ok(calls.some(([method, target]) => method === 'detach' && target.tabId === 7));
+  assert.equal((await command('tabs.list')).result.length, 3);
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(([method]) => method === 'Input.dispatchMouseEvent').length, 1, 'timed-out click never proceeds to press/release');
+  assert.equal(calls.filter(([method]) => method === 'Input.insertText').length, 0, 'queued mutation never executes later');
+  assert.equal((await command('runtime.info')).result.cdp.length, 0);
+});
+
 test('disconnect revokes access, erases token, and detaches tabs', async () => {
   const { calls, stored, socket, command, message } = await setup();
   await command('page.screenshot', { tabId: 7 });

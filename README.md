@@ -251,6 +251,7 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `browsers.list` | `{}`; lists connected profiles and saved offline aliases |
 | `extension.info` | `{}`; extension version and code hash, the hash of this bridge's `extension` directory, `current`, and the bridge's commit |
 | `extension.reload` | `{}`; reloads the unpacked extension from disk and returns after it reconnects, with `before` and the new `extension` |
+| `runtime.info` | `{}`; reads queued/running command methods, tab IDs and pending CDP methods/timestamps without waiting for the page queue; excludes selectors, expressions and page data |
 | `tabs.list` | `{}` |
 | `tabs.create` | `url?`, `active?` |
 | `tabs.close` | `tabId` |
@@ -274,6 +275,8 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `groups.manage` | `tabId`, `title?`, `color?`; groups a controlled tab |
 | `groups.release` | `tabId`; ungroups and detaches a managed tab |
 | `cdp.send` | `tabId`, `method`, `params?`; sends a Chrome DevTools Protocol command |
+
+CDP calls expire after 20 seconds. A timeout detaches that tab's debugger and cancels commands already queued behind it, preventing the remaining steps of a timed-out action from executing later. Inspect the current page before retrying an action: Chrome may have performed the in-flight operation. A fresh command can run after cancellation. Use `runtime.info` to identify the active method when diagnosing a stall; `status` and `extension.info` alone only establish the bridge connection and loaded code.
 
 ## Teach recording
 
