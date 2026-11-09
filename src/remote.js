@@ -41,5 +41,17 @@ export async function remoteCommand(args) {
     const client = createClient(await remoteOptions(profile));
     console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return;
   }
-  throw new Error('Usage: remote list | check NAME. Configure remote access with auth login.');
+  if (action === 'health' && name && !rest.length) {
+    const profile = await getProfile(name);
+    const { loadCredential } = await import('./tools/cli.js');
+    const health = async (path, headers) => { const r = await fetch(`${profile.server}${path}`, { headers, signal: AbortSignal.timeout(10000) }); if (!r.ok) throw new Error(`${path} returned HTTP ${r.status}`); return r.json(); };
+    let service, devices, error;
+    try { service = await health('/health'); devices = await health('/browser/devices', { Authorization: `Bearer ${(await loadCredential(profile.credentialFile)).access_token}` }); }
+    catch (e) { error = e.message; }
+    const mine = devices?.find(d => d.name === profile.device);
+    const ok = !error && !!mine?.connected && mine.grant?.active === true;
+    console.log(JSON.stringify({ ok, service, device: profile.device, desktop: mine ? 'online' : 'offline', grant: mine?.grant ?? null, ...(error ? { error: `Gateway unreachable or unauthorized: ${error}` } : {}) }, null, 2));
+    if (!ok) process.exitCode = 1; return;
+  }
+  throw new Error('Usage: remote list | check NAME | health NAME. Configure remote access with auth login.');
 }

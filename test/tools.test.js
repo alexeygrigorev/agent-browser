@@ -29,7 +29,7 @@ async function fixture(t) {
     res.end(JSON.stringify({ id_token: token }));
   });
   issuer = `http://127.0.0.1:${await listen(oidc)}`;
-  const tools = await createToolsServer({ file: join(dir, 'state.json'), origin: 'https://tools.example', clientId: 'tools-client', issuer, authBase: issuer, now: () => time, onAudit: () => {} });
+  const tools = await createToolsServer({ file: join(dir, 'state.json'), origin: 'https://tools.example', clientId: 'tools-client', issuer, authBase: issuer, now: () => time, gate: { kind: 'test', check: async () => ({ id: 't', expires: Date.now() + 600000 }) }, onAudit: () => {} });
   const base = `http://127.0.0.1:${(await tools.listen(0)).port}`;
   const sockets = [];
   t.after(async () => { for (const s of sockets) s.terminate(); await tools.close(); await close(oidc); await rm(dir, { recursive: true, force: true }); });

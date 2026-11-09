@@ -15,7 +15,14 @@ export function pairedFetch({ server, device, token, identity, daemonCertificate
     const wsUrl = new URL(`${prefix}/tunnel`, server); wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` }, maxPayload: 65536, perMessageDeflate: false, handshakeTimeout: 15000 });
     ws.on('error', () => {});
-    await once(ws, 'open');
+    // Surface the gateway's reason (no grant, desktop offline) instead of a bare status.
+    const refused = new Promise((_, reject) => ws.once('unexpected-response', (req, res) => {
+      const chunks = []; res.on('data', c => chunks.push(c));
+      res.on('end', () => { let reason = ''; try { reason = JSON.parse(Buffer.concat(chunks).toString()).error; } catch {} reject(new Error(`Remote browser access refused (HTTP ${res.statusCode}): ${reason || 'rejected by gateway'}`)); });
+    }));
+    refused.catch(() => {});
+    try { await Promise.race([once(ws, 'open'), refused]); }
+    catch (error) { ws.terminate(); throw /handshake has timed out|ECONN|ENOTFOUND|EAI_AGAIN/i.test(error.message) ? new Error(`Remote browser gateway unreachable within 15s: ${error.message}`) : error; }
     const channel = byteChannel({ send: data => new Promise((resolve, reject) => ws.send(data, e => e ? reject(e) : resolve())), close: () => ws.close(), pause: () => ws.pause(), resume: () => ws.resume() });
     ws.on('message', data => channel.receive(data)); ws.on('close', () => channel.destroy());
     const secure = tls.connect({ socket: channel, ca: daemonCertificate, cert: identity.certificate, key: identity.key, servername: 'agent-browser.local', rejectUnauthorized: true, minVersion: 'TLSv1.3' });

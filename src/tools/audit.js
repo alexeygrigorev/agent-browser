@@ -7,7 +7,7 @@ export function createAudit(sink = event => console.error(JSON.stringify(event))
     if (++count > 120) { dropped++; return; }
     const record = { time: new Date(now()).toISOString(), event };
     // Never log URLs, selectors, expressions, cookies, credentials or bodies.
-    for (const key of ['role', 'device', 'profile', 'method', 'outcome', 'bytes', 'fingerprint']) if (fields[key] !== undefined) record[key] = String(fields[key]).slice(0, 100);
+    for (const key of ['role', 'device', 'profile', 'method', 'outcome', 'bytes', 'fingerprint', 'grant']) if (fields[key] !== undefined) record[key] = String(fields[key]).slice(0, 100);
     if (fields.owner) record.principal = createHash('sha256').update(fields.owner).digest('hex').slice(0, 16);
     sink(record);
   };

@@ -62,13 +62,14 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
                            mouse, keyboard, windows, plus Chrome details
   teach stop [--no-sync]   Stop, transcribe, build timeline.md, sync the bundle
   teach status | teach process <id>  Show the session, or rebuild a bundle
-  remote list|check NAME    Inspect device-authenticated remote browser access
+  remote list|check|health NAME  Inspect device-authenticated remote browser access
   auth login|status|logout [--daemon]  Sign in using the shared DTC device flow
   auth identity [--daemon] [--output PATH]  Export this machine's public pairing certificate
   auth pair --certificate-file PATH  Pin the desktop's independently verified certificate
   daemon trust --certificate-file PATH [--profiles orin] [--mode inspect|interact|script] [--origins ORIGINS]
   daemon untrust --fingerprint SHA256  Revoke a controller's local browser grant
   daemon [--credential-file PATH]  Publish this desktop over outbound TLS
+  gate grant|revoke|list   Manage browser grants on the gateway host (file gate)
   tools-server             Run the shared HTTPS gateway behind a local TLS proxy
   call <method> [JSON]     Send a browser command (params default to {})
   call <method> --stdin    Read JSON params from standard input
@@ -95,7 +96,7 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'gate', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
   let port = getPort(), token, baseUrl, fetchImpl;
   if (command === 'auth') { const { runAuth } = await import('../src/tools/cli.js'); await runAuth(args); return; }
@@ -105,9 +106,11 @@ ${help}`);
     const { credentialPath } = await import('../src/tools/cli.js'); const { runDaemon } = await import('../src/tools/daemon.js');
     await runDaemon({ credentialFile: args[1] || credentialPath(true), bridgePort: port }); return;
   }
+  if (command === 'gate') { const { gateCommand } = await import('../src/tools/gate-cli.js'); await gateCommand(args); return; }
   if (command === 'tools-server') {
     const { createToolsServer } = await import('../src/tools/server.js');
-    const tools = await createToolsServer({ file: process.env.TOOLS_STATE_FILE, origin: process.env.TOOLS_ORIGIN || 'https://tools.dtcdev.click', clientId: process.env.TOOLS_AUTH_CLIENT_ID });
+    const { gateFromEnv } = await import('../src/tools/gate.js');
+    const tools = await createToolsServer({ file: process.env.TOOLS_STATE_FILE, origin: process.env.TOOLS_ORIGIN || 'https://tools.dtcdev.click', clientId: process.env.TOOLS_AUTH_CLIENT_ID, gate: gateFromEnv(), alertWebhook: process.env.TOOLS_ALERT_WEBHOOK });
     await tools.listen(getPort(process.env.TOOLS_PORT || '19336')); console.log('Tools gateway listening on loopback');
     const stop = async () => { await tools.close(); }; process.once('SIGINT', stop); process.once('SIGTERM', stop); return;
   }

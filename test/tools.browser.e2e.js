@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { createToolsServer } from '../src/tools/server.js';
 import { hash, secret } from '../src/tools/auth.js';
+const allow = { kind: 'test', check: async () => ({ id: 'test-grant', expires: Date.now() + 600000 }) };
 import { ensureIdentity } from '../src/tools/identity.js';
 
 const dir = await mkdtemp(join(tmpdir(), 'tools-browser-'));
@@ -21,7 +22,7 @@ try {
   });
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${proxy.address().port}`;
-  tools = await createToolsServer({ file: join(dir, 'state.json'), origin, clientId: 'synthetic-client' }); upstreamPort = (await tools.listen(0)).port;
+  tools = await createToolsServer({ file: join(dir, 'state.json'), origin, clientId: 'synthetic-client', gate: allow }); upstreamPort = (await tools.listen(0)).port;
   const token = secret(); const csrf = secret();
   tools.auth.state.sessions[hash(token)] = { owner: 'synthetic-user', email: 'synthetic@datatalks.club', csrf, expires: Date.now() + 600000 };
   const identity = await ensureIdentity(join(dir, 'controller-identity.json'));
