@@ -12,6 +12,7 @@ import { createClient } from '../src/client.js';
 import { createFiles } from '../src/files.js';
 import { hash, secret } from '../src/tools/auth.js';
 import { execFile } from 'node:child_process';
+const allow = { kind: 'test', check: async () => ({ id: 'test-grant', expires: Date.now() + 600000 }) };
 import { promisify } from 'node:util';
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
@@ -23,7 +24,7 @@ test('paired TLS authenticates endpoints, enforces desktop grants and streams st
   const wrongIdentity = await ensureIdentity(join(dir, 'wrong.json'));
   const trustFile = join(dir, 'trust.json');
   await pairController({ certificate: controllerIdentity.certificate, profiles: ['orin'], mode: 'interact', origins: ['https://example.test'], file: trustFile });
-  const audit = []; const tools = await createToolsServer({ file: join(dir, 'state.json'), origin: 'https://tools.example', clientId: 'test', onAudit: e => audit.push(e) });
+  const audit = []; const tools = await createToolsServer({ file: join(dir, 'state.json'), origin: 'https://tools.example', clientId: 'test', gate: allow, onAudit: e => audit.push(e) });
   const token = secret(), daemonToken = secret();
   tools.auth.state.grants.synthetic = { expires: Date.now() + 600000 };
   tools.auth.state.credentials[hash(token)] = { owner: 'a', role: 'controller', grantId: 'synthetic', tools: ['browser'], expires: Date.now() + 600000 };

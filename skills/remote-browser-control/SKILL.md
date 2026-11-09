@@ -7,6 +7,14 @@ Resolve the repository root as `../..` from this skill directory. Run commands
 there or supply an absolute `bin/cli.js` path. The desktop keeps Chrome and the
 extension; the controlling machine runs Node.js 22+ and this CLI/MCP client.
 
+## Resource Gate grant first
+
+Remote browser access is granted per request through the Resource Gate, never always-on.
+Check with `node bin/cli.js remote health desktop` (exit 1 when the desktop is offline or no
+grant is active). `Remote browser access refused (HTTP 403)` means no grant: ask Alexey to approve
+one, do not retry in a loop and never use another browser. HTTP 503 offline errors raise a server
+alert already. Details: `docs/service.md`.
+
 ## Authenticate a controlling machine
 
 ```sh
