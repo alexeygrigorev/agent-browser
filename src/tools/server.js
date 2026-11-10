@@ -43,8 +43,13 @@ export async function createToolsServer(options) {
       if (req.method === 'GET' && url.pathname === '/browser/devices') { const p = auth.principal(req); const online = [...daemons.values()].filter(d => d.principal.owner === p.owner).map(d => d.principal.device);
         const out = []; for (const name of online) { let grant = null; try { const g = await gate.check({ owner: p.owner, device: name }); grant = { active: true, expires: new Date(g.expires).toISOString() }; } catch (e) { grant = { active: false, reason: e.message }; } out.push({ name, connected: true, grant }); }
         json(res, 200, out); return; }
+      const hasGateToken = () => {
+        const expected = (process.env.PHONE_GATE_TOKEN || '').trim();
+        const header = String(req.headers.authorization || '').trim();
+        return Boolean(expected && (header === expected || header === `Bearer ${expected}`));
+      };
       if (req.method === 'POST' && url.pathname === '/api/phone-gate/requests') {
-        auth.principal(req);
+        if (!hasGateToken()) auth.principal(req);
         const body = await (await import('./auth.js')).jsonBody(req);
         const id = String(body.id || randomUUID().slice(0, 12));
         const requester = String(body.requester || '').trim();
@@ -59,7 +64,7 @@ export async function createToolsServer(options) {
         json(res, 201, { ...item, approve_url: `${options.origin}/approve?id=${encodeURIComponent(id)}` }); return;
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/phone-gate/requests/')) {
-        auth.principal(req);
+        if (!hasGateToken()) auth.principal(req);
         const id = url.pathname.slice('/api/phone-gate/requests/'.length);
         const item = auth.state.phoneRequests[id];
         if (!item) throw fail(404, 'Request not found');

@@ -194,6 +194,23 @@ export async function createAuth({ file, origin, clientId, gate, issuer = 'https
       const s = session(req);
       if (!s) { res.writeHead(303, { location: `/auth/login?approve=${encodeURIComponent(id)}` }); res.end(); return true; }
       if (s.email !== 'alexey@datatalks.club') throw fail(403, 'Only Alexey (alexey@datatalks.club) can approve or deny requests; agents cannot self-approve');
+      const gateUrl = (process.env.PHONE_GATE_URL || '').replace(/\/$/, ''), gateToken = process.env.PHONE_GATE_TOKEN || '';
+      if (gateUrl && gateToken) {
+        try {
+          const up = await fetch(`${gateUrl}${id ? `/requests/${encodeURIComponent(id)}` : '/requests'}`, { headers: { Authorization: gateToken }, signal: AbortSignal.timeout(4000) });
+          if (up.ok) {
+            const payload = await up.json();
+            for (const u of (id ? [payload] : (payload.items || []))) {
+              if (!u || !u.id) continue;
+              const cur = state.phoneRequests[u.id];
+              if (!cur || cur.state === 'pending') {
+                state.phoneRequests[u.id] = { id: String(u.id), requester: String(u.requester || 'agent'), resource: String(u.resource || 'browser'), scope: String(u.scope || 'desktop'), reason: String(u.reason || ''), ttl_s: Number(u.ttl_s) || 1800, state: cur?.state && cur.state !== 'pending' ? cur.state : String(u.state || 'pending'), requestedAt: (Number(u.requested_at) || Math.floor(now() / 1000)) * 1000, expires: (Number(u.expires_at) || Math.floor(now() / 1000) + 900) * 1000 };
+              }
+            }
+            await save();
+          }
+        } catch {}
+      }
       const r = state.phoneRequests[id];
       if (!r || r.expires <= now() || r.state !== 'pending') {
         const pending = Object.values(state.phoneRequests).filter(x => x.state === 'pending' && x.expires > now());
