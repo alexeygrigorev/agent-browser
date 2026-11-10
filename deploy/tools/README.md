@@ -5,7 +5,7 @@ client are defined in `DataTalksClub/aws-infra`, `sandbox/tools/template.yaml`.
 Use the resulting ToolsClientId in `/etc/dtc-tools.env`:
 
 ```text
-TOOLS_GATE_URL / TOOLS_GATE_TOKEN or TOOLS_GATE_FILE  (required; see docs/service.md)
+PHONE_GATE_URL / PHONE_GATE_TOKEN or TOOLS_GATE_FILE  (required; see docs/service.md)
 TOOLS_ALERT_WEBHOOK=<optional>
 TOOLS_ORIGIN=https://tools.dtcdev.click
 TOOLS_AUTH_CLIENT_ID=<public-client-id>

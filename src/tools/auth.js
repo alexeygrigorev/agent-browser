@@ -24,7 +24,7 @@ export function page(res, title, body) {
   res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)} · DTC Tools</title><style>body{font:17px/1.55 system-ui;color:#18332e;background:#f3f4ef;max-width:720px;margin:8vh auto;padding:24px}main{background:white;border:1px solid #ccd5ce;padding:36px;border-radius:12px}h1{font-size:30px;line-height:1.2}a{color:#126347}button{font:inherit;padding:10px 20px;background:#126347;color:white;border:0;border-radius:5px;cursor:pointer}button[name=deny]{background:#6b3838}input{font:inherit;padding:9px;max-width:90%}code{font-size:22px}small{color:#52645b}</style><main><small>DataTalks.Club · Tools</small><h1>${escape(title)}</h1>${body}</main></html>`);
 }
 
-export async function createAuth({ file, origin, clientId, issuer = 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_H7nJu52Bs', authBase = 'https://auth.dtcdev.click', verifyIdentity, now = Date.now, audit = () => {} }) {
+export async function createAuth({ file, origin, clientId, gate, issuer = 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_H7nJu52Bs', authBase = 'https://auth.dtcdev.click', verifyIdentity, now = Date.now, audit = () => {} }) {
   if (!clientId || !file || new URL(origin).protocol !== 'https:') throw new Error('Tools server requires HTTPS origin, client ID and private state file');
   const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
   const verify = verifyIdentity || (async (token, nonce) => {
@@ -34,7 +34,7 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
   });
   let state;
   try { state = JSON.parse(await readFile(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; state = { sessions: {}, credentials: {}, devices: {}, transactions: {} }; }
-  state.grants ||= {}; state.proofs ||= {};
+  state.grants ||= {}; state.proofs ||= {}; state.phoneRequests ||= {};
   for (const [id, item] of Object.entries(state.credentials)) if (item.role === 'controller' && !item.grantId) delete state.credentials[id];
   let queue = Promise.resolve();
   function save() {
@@ -80,12 +80,13 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
   }
   async function handle(req, res, url, onRevoke = () => {}) {
     const path = url.pathname;
-    if (!path.startsWith('/auth/') && !path.startsWith('/api/auth/') && path !== '/device') return false;
+    if (!path.startsWith('/auth/') && !path.startsWith('/api/auth/') && path !== '/device' && path !== '/approve') return false;
     if (req.method === 'GET' && path === '/auth/login') {
       prune(); rate(req);
       const tx = secret(), binding = secret(), verifier = secret(), nonce = secret();
       const code = url.searchParams.get('code') || '';
-      state.transactions[hash(tx)] = { binding: hash(binding), verifier, nonce, code: /^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code) ? code : '', expires: now() + 600000 };
+      const approve = url.searchParams.get('approve') || '';
+      state.transactions[hash(tx)] = { binding: hash(binding), verifier, nonce, code: /^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code) ? code : '', approve: /^[a-f0-9-]{6,36}$/i.test(approve) ? approve : '', expires: now() + 600000 };
       await save();
       const target = new URL(`${authBase}/oauth2/authorize`);
       target.search = new URLSearchParams({ response_type: 'code', client_id: clientId, redirect_uri: `${origin}/auth/callback`, scope: 'openid email profile', identity_provider: 'Google', state: tx, nonce, code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') }).toString();
@@ -105,7 +106,8 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
         const email = String(identity.email || '').toLowerCase();
         if (!identity.sub || !email.endsWith('@datatalks.club') || ![true, 'true'].includes(identity.email_verified)) throw fail(403, 'Verified DataTalks.Club account required');
         const raw = secret(); state.sessions[hash(raw)] = { owner: identity.sub, email, csrf: secret(), expires: now() + 86400000 }; await save();
-        res.writeHead(303, { location: tx.code ? `/device?code=${tx.code}` : '/browser', 'set-cookie': [cookie('__Host-tools-session', raw, 86400), cookie('__Host-tools-tx', '', 0)], 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end();
+        const nextUrl = tx.approve ? `/approve?id=${encodeURIComponent(tx.approve)}` : tx.code ? `/device?code=${tx.code}` : '/browser';
+        res.writeHead(303, { location: nextUrl, 'set-cookie': [cookie('__Host-tools-session', raw, 86400), cookie('__Host-tools-tx', '', 0)], 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end();
       } catch { res.writeHead(303, { location: '/auth/error', 'set-cookie': cookie('__Host-tools-tx', '', 0), 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end(); }
       return true;
     }
@@ -185,6 +187,41 @@ export async function createAuth({ file, origin, clientId, issuer = 'https://cog
       csrf(req, s, b.csrf);
       const c = state.grants[b.id] || state.credentials[b.id]; if (!c || c.owner !== s.owner) throw fail(404, 'Credential not found'); revoke(b.id, onRevoke); await save();
       if (path === '/auth/revoke') { res.writeHead(303, { location: '/browser' }); res.end(); } else json(res, 200, { revoked: true }); return true;
+    }
+    if (req.method === 'GET' && path === '/approve') {
+      prune();
+      const id = url.searchParams.get('id') || '';
+      const s = session(req);
+      if (!s) { res.writeHead(303, { location: `/auth/login?approve=${encodeURIComponent(id)}` }); res.end(); return true; }
+      if (s.email !== 'alexey@datatalks.club') throw fail(403, 'Only Alexey (alexey@datatalks.club) can approve or deny requests; agents cannot self-approve');
+      const r = state.phoneRequests[id];
+      if (!r || r.expires <= now() || r.state !== 'pending') {
+        const pending = Object.values(state.phoneRequests).filter(x => x.state === 'pending' && x.expires > now());
+        if (!pending.length) { page(res, 'Phone approvals', '<p>No pending approval requests.</p><a href="/browser">Connected browsers</a>'); return true; }
+        page(res, 'Pending phone approvals', pending.map(x => `<p><strong>${escape(x.requester)}</strong> asks for <code>${escape(x.resource)}:${escape(x.scope)}</code> (${Math.round(x.ttl_s / 60)}m): ${escape(x.reason)} · <a href="/approve?id=${encodeURIComponent(x.id)}">Review</a></p>`).join('')); return true;
+      }
+      const mins = Math.max(1, Math.round(r.ttl_s / 60));
+      const dur = mins % 60 === 0 ? `${mins / 60}h (${mins} minutes)` : `${mins} minutes`;
+      page(res, 'Approve resource request', `<p>Signed in as <strong>${escape(s.email)}</strong>.</p><ul><li><strong>Who asks:</strong> ${escape(r.requester)}</li><li><strong>For what resource:</strong> <code>${escape(r.resource)}:${escape(r.scope)}</code></li><li><strong>Why:</strong> ${escape(r.reason)}</li><li><strong>For how long:</strong> ${escape(dur)}</li></ul><form method="post" action="/api/auth/approve"><input type="hidden" name="id" value="${escape(r.id)}"><input type="hidden" name="csrf" value="${escape(s.csrf)}"><button name="approve" value="yes">Approve</button> <button name="deny" value="yes">Deny</button></form>`); return true;
+    }
+    if (req.method === 'POST' && path === '/api/auth/approve') {
+      const s = session(req); if (!s) throw fail(401, 'Browser sign-in required');
+      if (s.email !== 'alexey@datatalks.club') throw fail(403, 'Only Alexey (alexey@datatalks.club) can approve or deny requests; agents cannot self-approve');
+      const chunks = []; let size = 0; for await (const chunk of req) { size += chunk.length; if (size > 4096) throw fail(413, 'Request too large'); chunks.push(chunk); }
+      const body = new URLSearchParams(Buffer.concat(chunks).toString()); csrf(req, s, body.get('csrf'));
+      const r = state.phoneRequests[body.get('id') || ''];
+      if (!r || r.expires <= now() || r.state !== 'pending') throw fail(400, 'Request expired or already decided');
+      if (body.get('approve') === 'yes') {
+        r.state = 'approved'; r.decidedAt = now(); r.grantExpires = now() + r.ttl_s * 1000;
+        if (r.resource === 'browser' && gate?.grant) await gate.grant(r.scope || 'desktop', Math.min(r.ttl_s * 1000, 8 * 3600 * 1000), `${r.requester}: ${r.reason}`);
+        audit('phone_request_approved', { id: r.id, requester: r.requester, resource: r.resource, scope: r.scope });
+      } else {
+        r.state = 'denied'; r.decidedAt = now();
+        if (r.resource === 'browser' && gate?.revoke) await gate.revoke(r.scope || 'desktop');
+        audit('phone_request_denied', { id: r.id, requester: r.requester, resource: r.resource, scope: r.scope });
+      }
+      await save();
+      page(res, r.state === 'approved' ? 'Request approved' : 'Request denied', `<p><strong>${escape(r.requester)}</strong> (${escape(r.resource)}:${escape(r.scope)}) is now <strong>${escape(r.state)}</strong>.</p><a href="/approve">Pending requests</a> · <a href="/browser">Connected browsers</a>`); return true;
     }
     throw fail(404, 'Not found');
   }

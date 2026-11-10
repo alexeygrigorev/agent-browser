@@ -12,9 +12,9 @@ export async function sendFrame(ws, message) {
 export async function createToolsServer(options) {
   const audit = createAudit(options.onAudit);
   const alert = options.alert || createAlerts({ webhook: options.alertWebhook });
-  // Fail closed: without an explicit Resource Gate no controller tunnel is ever opened.
-  const gate = options.gate || { check: async () => { throw fail(403, 'Resource Gate is not configured; browser access is refused'); } };
-  const auth = await createAuth({ ...options, audit }); const daemons = new Map(), tunnels = new Map();
+  // Fail closed: without an explicit phone approval gate no controller tunnel is ever opened.
+  const gate = options.gate || { check: async () => { throw fail(403, 'Phone approval gate is not configured; browser access is refused'); } };
+  const auth = await createAuth({ ...options, gate, audit }); const daemons = new Map(), tunnels = new Map();
   const keyFor = p => `${p.owner}:${p.device}`;
   function closeTunnel(id) {
     const t = tunnels.get(id); if (!t) return; tunnels.delete(id); clearTimeout(t.timer);
@@ -43,6 +43,28 @@ export async function createToolsServer(options) {
       if (req.method === 'GET' && url.pathname === '/browser/devices') { const p = auth.principal(req); const online = [...daemons.values()].filter(d => d.principal.owner === p.owner).map(d => d.principal.device);
         const out = []; for (const name of online) { let grant = null; try { const g = await gate.check({ owner: p.owner, device: name }); grant = { active: true, expires: new Date(g.expires).toISOString() }; } catch (e) { grant = { active: false, reason: e.message }; } out.push({ name, connected: true, grant }); }
         json(res, 200, out); return; }
+      if (req.method === 'POST' && url.pathname === '/api/phone-gate/requests') {
+        auth.principal(req);
+        const body = await (await import('./auth.js')).jsonBody(req);
+        const id = String(body.id || randomUUID().slice(0, 12));
+        const requester = String(body.requester || '').trim();
+        const resource = String(body.resource || 'browser').trim();
+        const scope = String(body.scope || 'desktop').trim();
+        const reason = String(body.reason || '').trim();
+        const ttl_s = Math.min(28800, Math.max(60, Number(body.ttl_s) || 1800));
+        if (!requester || !reason) throw fail(400, 'requester and reason are required');
+        const item = { id, requester: requester.slice(0, 120), resource: resource.slice(0, 40), scope: scope.slice(0, 40), reason: reason.slice(0, 300), ttl_s, state: 'pending', requestedAt: auth.now(), expires: auth.now() + 900000 };
+        auth.state.phoneRequests[id] = item; await auth.save();
+        audit('phone_request_created', { id, requester: item.requester, resource: item.resource, scope: item.scope });
+        json(res, 201, { ...item, approve_url: `${options.origin}/approve?id=${encodeURIComponent(id)}` }); return;
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/phone-gate/requests/')) {
+        auth.principal(req);
+        const id = url.pathname.slice('/api/phone-gate/requests/'.length);
+        const item = auth.state.phoneRequests[id];
+        if (!item) throw fail(404, 'Request not found');
+        json(res, 200, item); return;
+      }
       // No plaintext browser-command or file-transfer endpoint remains.
       if (url.pathname.startsWith('/browser/')) auth.principal(req);
       throw fail(404, 'Use the paired TLS browser tunnel');

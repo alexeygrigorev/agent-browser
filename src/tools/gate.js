@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { fail, deviceName } from './auth.js';
 import { writePrivate } from './private-store.js';
 
-// Resource Gate check for the `browser` resource. Fails closed: anything other
-// than an explicit, unexpired grant for the device refuses the tunnel.
+// Phone approval gate check for the `browser` resource. Fails closed: anything other
+// than an explicit, unexpired phone-approved grant for the device refuses the tunnel.
 // A grant is `{ id, expires }` with `expires` in epoch milliseconds.
 export const MAX_GRANT_MS = 8 * 3600 * 1000;
 
@@ -13,9 +13,9 @@ export function createFileGate({ file, now = Date.now }) {
   return {
     kind: 'file',
     async check({ device }) {
-      let grants; try { grants = await read(); } catch { throw fail(503, 'Resource Gate grant store is unreadable; browser access is refused'); }
+      let grants; try { grants = await read(); } catch { throw fail(503, 'Phone approval grant store is unreadable; browser access is refused'); }
       const active = grants.filter(g => g.device === device && g.expires > now()).sort((a, b) => b.expires - a.expires)[0];
-      if (!active) throw fail(403, `No active Resource Gate grant for browser:${device}. Ask Alexey to approve a grant.`);
+      if (!active) throw fail(403, `No active phone approval grant for browser:${device}. Ask Alexey to approve on his phone.`);
       return { id: active.id, expires: active.expires };
     },
     async grant(device, ttlMs, label = '') {
@@ -33,30 +33,41 @@ export function createFileGate({ file, now = Date.now }) {
   };
 }
 
-// Remote Resource Gate: GET {url}/v1/check?resource=browser&scope=<device> with a
-// bearer token; 200 {granted, grant_id, expires_at} where expires_at is ISO time.
-export function createHttpGate({ url, token, fetchImpl = fetch, timeout = 5000, now = Date.now }) {
+// Phone Gate (`phone-aws-auth` Lambda URL): GET {url}/check?resource=browser&scope=<device>
+// with Authorization header; returns 200 {granted, grant_id, expires_at} (epoch seconds or ISO).
+// Optionally backed by a local file store for mobile `/approve` decisions on tools.dtcdev.click.
+export function createPhoneGate({ url, token, rowKey = '', file = '', fetchImpl = fetch, timeout = 5000, now = Date.now }) {
+  const local = file ? createFileGate({ file, now }) : null;
   return {
-    kind: 'http',
+    kind: 'phone',
     async check({ device }) {
+      if (local) {
+        try { return await local.check({ device }); } catch (e) { if (e.status === 503) throw e; }
+      }
       let response, body;
+      const headers = { Authorization: `Bearer ${token}` };
+      if (rowKey) headers['x-host-row-key'] = rowKey;
       try {
-        response = await fetchImpl(`${url.replace(/\/$/, '')}/v1/check?resource=browser&scope=${encodeURIComponent(device)}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeout) });
+        response = await fetchImpl(`${url.replace(/\/$/, '')}/check?resource=browser&scope=${encodeURIComponent(device)}`, { headers, signal: AbortSignal.timeout(timeout) });
         body = await response.json();
-      } catch { throw fail(503, 'Resource Gate is unreachable; browser access is refused'); }
-      if (!response.ok) throw fail(503, `Resource Gate error (HTTP ${response.status}); browser access is refused`);
-      const expires = Date.parse(body?.expires_at);
-      if (body?.granted !== true || !Number.isFinite(expires) || expires <= now()) throw fail(403, `No active Resource Gate grant for browser:${device}. Ask Alexey to approve a grant.`);
-      return { id: String(body.grant_id || 'gate'), expires };
+      } catch { throw fail(503, 'Phone approval gate is unreachable; browser access is refused'); }
+      if (!response.ok) throw fail(503, `Phone approval gate error (HTTP ${response.status}); browser access is refused`);
+      const rawExp = body?.expires_at;
+      const expires = typeof rawExp === 'number' ? (rawExp < 1e11 ? rawExp * 1000 : rawExp) : Date.parse(rawExp);
+      if (body?.granted !== true || !Number.isFinite(expires) || expires <= now()) throw fail(403, `No active phone approval grant for browser:${device}. Ask Alexey to approve on his phone.`);
+      return { id: String(body.grant_id || 'phone'), expires };
     },
+    grant: local ? (...args) => local.grant(...args) : undefined,
+    revoke: local ? (...args) => local.revoke(...args) : undefined,
+    list: local ? (...args) => local.list(...args) : undefined,
   };
 }
 
 export function gateFromEnv(env = process.env) {
-  if (env.TOOLS_GATE_URL) {
-    if (!env.TOOLS_GATE_TOKEN) throw new Error('TOOLS_GATE_URL requires TOOLS_GATE_TOKEN');
-    return createHttpGate({ url: env.TOOLS_GATE_URL, token: env.TOOLS_GATE_TOKEN });
+  if (env.PHONE_GATE_URL) {
+    if (!env.PHONE_GATE_TOKEN) throw new Error('PHONE_GATE_URL requires PHONE_GATE_TOKEN');
+    return createPhoneGate({ url: env.PHONE_GATE_URL, token: env.PHONE_GATE_TOKEN, rowKey: env.PHONE_GATE_ROW_KEY || '', file: env.TOOLS_GATE_FILE || '' });
   }
   if (env.TOOLS_GATE_FILE) return createFileGate({ file: env.TOOLS_GATE_FILE });
-  throw new Error('Resource Gate not configured: set TOOLS_GATE_URL (+ TOOLS_GATE_TOKEN) or TOOLS_GATE_FILE. Browser access is never always-on.');
+  throw new Error('Phone approval gate not configured: set PHONE_GATE_URL (+ PHONE_GATE_TOKEN) or TOOLS_GATE_FILE. Browser access is never always-on.');
 }

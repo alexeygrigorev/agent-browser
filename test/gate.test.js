@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createToolsServer } from '../src/tools/server.js';
@@ -9,7 +9,7 @@ import { connectDaemon } from '../src/tools/daemon.js';
 import { ensureIdentity, pairController } from '../src/tools/identity.js';
 import { pairedFetch } from '../src/tools/paired-client.js';
 import { createClient } from '../src/client.js';
-import { createFileGate, createHttpGate, gateFromEnv } from '../src/tools/gate.js';
+import { createFileGate, createPhoneGate, gateFromEnv } from '../src/tools/gate.js';
 import { createAlerts } from '../src/tools/alerts.js';
 import { hash, secret } from '../src/tools/auth.js';
 
@@ -19,7 +19,7 @@ const close = server => { server.closeAllConnections(); return new Promise(resol
 test('file gate grants, expires, revokes and fails closed', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'gate-')); t.after(() => rm(dir, { recursive: true, force: true }));
   let time = 1e12; const gate = createFileGate({ file: join(dir, 'g.json'), now: () => time });
-  await assert.rejects(gate.check({ device: 'desktop' }), e => e.status === 403 && /No active Resource Gate grant/.test(e.message));
+  await assert.rejects(gate.check({ device: 'desktop' }), e => e.status === 403 && /No active phone approval grant/.test(e.message));
   const g = await gate.grant('desktop', 600000, 'test');
   assert.equal((await stat(join(dir, 'g.json'))).mode & 0o777, 0o600);
   assert.deepEqual(await gate.check({ device: 'desktop' }), { id: g.id, expires: g.expires });
@@ -32,16 +32,16 @@ test('file gate grants, expires, revokes and fails closed', async t => {
   await assert.rejects(gate.check({ device: 'desktop' }), e => e.status === 503);
 });
 
-test('http gate maps grants, denials and outages without leaking the token', async () => {
-  const calls = []; const mk = (status, body) => createHttpGate({ url: 'https://gate.example/', token: 'SECRET-TOKEN', fetchImpl: async (url, o) => { calls.push([url, o.headers.Authorization]); if (body === 'throw') throw new Error('boom SECRET-TOKEN'); return new Response(JSON.stringify(body), { status }); } });
-  const ok = await mk(200, { granted: true, grant_id: 'g1', expires_at: new Date(Date.now() + 60000).toISOString() }).check({ device: 'desktop' });
-  assert.equal(ok.id, 'g1'); assert.equal(calls[0][0], 'https://gate.example/v1/check?resource=browser&scope=desktop');
+test('phone gate maps grants, denials and outages without leaking the token', async () => {
+  const calls = []; const mk = (status, body) => createPhoneGate({ url: 'https://phone-gate.example/', token: 'SECRET-TOKEN', fetchImpl: async (url, o) => { calls.push([url, o.headers.Authorization]); if (body === 'throw') throw new Error('boom SECRET-TOKEN'); return new Response(JSON.stringify(body), { status }); } });
+  const ok = await mk(200, { granted: true, grant_id: 'g1', expires_at: Math.floor(Date.now() / 1000) + 60 }).check({ device: 'desktop' });
+  assert.equal(ok.id, 'g1'); assert.equal(calls[0][0], 'https://phone-gate.example/check?resource=browser&scope=desktop');
   await assert.rejects(mk(200, { granted: false }).check({ device: 'desktop' }), e => e.status === 403);
-  await assert.rejects(mk(200, { granted: true, expires_at: new Date(Date.now() - 1000).toISOString() }).check({ device: 'desktop' }), e => e.status === 403);
+  await assert.rejects(mk(200, { granted: true, expires_at: Math.floor(Date.now() / 1000) - 10 }).check({ device: 'desktop' }), e => e.status === 403);
   await assert.rejects(mk(500, {}).check({ device: 'desktop' }), e => e.status === 503);
   await assert.rejects(mk(200, 'throw').check({ device: 'desktop' }), e => e.status === 503 && !/SECRET/.test(e.message));
   assert.throws(() => gateFromEnv({}), /never always-on/);
-  assert.throws(() => gateFromEnv({ TOOLS_GATE_URL: 'https://x' }), /TOOLS_GATE_TOKEN/);
+  assert.throws(() => gateFromEnv({ PHONE_GATE_URL: 'https://x' }), /PHONE_GATE_TOKEN/);
 });
 
 test('alerts are deduplicated and deliver without logging the webhook', async () => {
@@ -54,7 +54,7 @@ test('alerts are deduplicated and deliver without logging the webhook', async ()
   await failing('k', 'm'); assert.ok(sink.some(e => e.event === 'alert_delivery_failed')); assert.ok(!JSON.stringify(sink).includes('SECRET'));
 });
 
-test('tunnels need a live gate grant, refuse loudly and alert when the desktop is offline', { timeout: 30000 }, async t => {
+test('tunnels need a live phone approval grant, refuse loudly and alert when the desktop is offline', { timeout: 30000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'gate-e2e-'));
   const daemonIdentity = await ensureIdentity(join(dir, 'daemon.json')), controllerIdentity = await ensureIdentity(join(dir, 'controller.json'));
   const trustFile = join(dir, 'trust.json');
@@ -73,7 +73,7 @@ test('tunnels need a live gate grant, refuse loudly and alert when the desktop i
   assert.equal((await (await fetch(base + '/health')).json()).gate, 'file');
 
   // No grant: refused with a visible reason, even though the desktop is offline (no state leak).
-  await assert.rejects(client.call('browsers.list'), /refused \(HTTP 403\): No active Resource Gate grant/);
+  await assert.rejects(client.call('browsers.list'), /refused \(HTTP 403\): No active phone approval grant/);
   assert.deepEqual(alerts, []);
 
   // Grant but desktop offline: clear 503 and a server-side alert.
@@ -91,5 +91,4 @@ test('tunnels need a live gate grant, refuse loudly and alert when the desktop i
   await gate.revoke(grant.id);
   await assert.rejects(client.call('browsers.list'), /refused \(HTTP 403\)/);
   assert.equal((await (await fetch(base + '/browser/devices', { headers: { Authorization: `Bearer ${token}` } })).json())[0].grant.active, false);
-
 });
