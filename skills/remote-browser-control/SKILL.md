@@ -7,12 +7,24 @@ Resolve the repository root as `../..` from this skill directory. Run commands
 there or supply an absolute `bin/cli.js` path. The desktop keeps Chrome and the
 extension; the controlling machine runs Node.js 22+ and this CLI/MCP client.
 
-## Resource Gate grant first
+## Phone approval grant first
 
-Remote browser access is granted per request through the Resource Gate, never always-on.
+Remote browser access is granted per request on Alexey's phone, never always-on.
 Check with `node bin/cli.js remote health desktop` (exit 1 when the desktop is offline or no
-grant is active). `Remote browser access refused (HTTP 403)` means no grant: ask Alexey to approve
-one, do not retry in a loop and never use another browser. HTTP 503 offline errors raise a server
+grant is active). To request phone approval:
+
+```sh
+python3 ~/.local/share/phone-cloud-gate/install_aws_gate.py request \
+  --requester "<session-name>" \
+  --resource browser \
+  --scope desktop \
+  --reason "<why browser access is needed>" \
+  --ttl 1800 \
+  --wait
+```
+
+`Remote browser access refused (HTTP 403)` means no active phone grant: request approval on Alexey's phone,
+do not retry in a loop and never use another browser. HTTP 503 offline errors raise a server
 alert already. Details: `docs/service.md`.
 
 ## Authenticate a controlling machine

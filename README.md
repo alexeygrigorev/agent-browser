@@ -44,7 +44,7 @@ On connect, the extension sends its manifest version and a SHA-256 hash of its s
 
 `extension reload` calls `chrome.runtime.reload()`, then waits up to 25 seconds for the reloaded worker to reconnect. Chrome keeps an unpacked extension enabled across a reload only while **Developer mode** is on, which it already is after **Load unpacked**. Extensions older than this command report `Unknown method`, so they need one last manual reload, or a Chrome restart.
 
-Remote agents: see [Browser service: API, health, gate and alerts](docs/service.md). Remote access needs an active Resource Gate grant.
+Remote agents: see [Browser service: API, health, phone gate and alerts](docs/service.md). Remote access needs an active phone approval grant.
 
 ## Browser nicknames
 
