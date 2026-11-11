@@ -1,6 +1,19 @@
 name: CI
 on: [push, pull_request]
 jobs:
+  background-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+      - name: Verify windowless connection and foreground focus on an isolated Windows desktop
+        run: node test/background.windows.e2e.js
   test:
     runs-on: ubuntu-latest
     steps:

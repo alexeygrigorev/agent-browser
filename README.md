@@ -31,6 +31,15 @@ No popup interaction is needed for normal use. Browser commands wait up to 35 se
 
 If updating an older unpacked extension, reload it once in `chrome://extensions` to refresh its popup and service worker. No pairing token is needed.
 
+The bridge starts only its Node service, not Chrome or a closed Chrome profile.
+To keep a profile available after closing its windows, opt into **Keep this
+profile available after closing its windows** in that profile's extension popup
+and allow background apps in Chrome's System settings. This uses Chrome's optional
+background permission and can also start Chrome at computer sign-in. Uncheck it
+to remove the permission; Pause still stops access. See [local background
+connection and focus verification](docs/local-background.md) for setup, windowless
+startup constraints, and the Windows test's limits.
+
 ### Updating the extension
 
 After pulling new extension code, reload it from the command line instead of visiting `chrome://extensions`:

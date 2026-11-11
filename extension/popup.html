@@ -3,5 +3,7 @@
 <body><h1>Agent Browser Bridge</h1><p id="browser-name" hidden></p><p id="status" role="status">Checking connection…</p>
 <p>Connects automatically to the local bridge. While connected, local agents can read and control your signed-in tabs.</p>
 <div><button id="connect">Resume</button><button id="disconnect">Pause</button></div>
+<p><label><input id="background" type="checkbox"> Keep this profile available after closing its windows</label></p>
+<p class="detail">Optional Chrome background mode can also start Chrome at computer sign-in. Chrome's System setting must allow background apps. Uncheck to remove this permission. Pause still stops browser access.</p>
 <p class="detail">Local bridge: 127.0.0.1:19333. Chrome displays a debugging banner when a tab is controlled. Pause stops access and detaches controlled tabs. Connection and recovery are automatic.</p>
 <script src="popup.js" type="module"></script></body></html>
