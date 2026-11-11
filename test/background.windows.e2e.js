@@ -83,7 +83,7 @@ async function startProbe(label) {
 }
 try {
   const port = (await bridge.listen()).port;
-  const client = createClient({ port });
+  let client = createClient({ port });
   await cp(resolve('extension'), extension, { recursive: true });
   for (const name of ['background.js', 'manifest.json']) {
     const path = join(extension, name);
@@ -106,6 +106,7 @@ try {
   await eventually(async () => (await client.status()).connected, 'setup connection');
   const identity = (await client.call('browser.info')).id;
   await client.call('browser.rename', { name: 'main' });
+  client = createClient({ port, browser: 'main' });
   await context.close(); context = undefined;
   await eventually(async () => !(await client.status()).connected, 'Chrome fully exited');
 
@@ -136,7 +137,24 @@ try {
   assert.deepEqual(await client.call('tabs.list'), []);
   await keepProbe.assertUnchanged();
   await keepProbe.stop();
-  console.log('PASS: same Default identity connects without windows; bridge restart and last-window close preserve foreground; ordinary-launch positive control detects focus');
+
+  // Exercise the same user-data directory with another profile's window open.
+  // Only disposable Profile 1 is opened, before the foreground probe starts.
+  const siblingLaunch = launch(['--profile-directory=Profile 1', '--new-window', 'about:blank']);
+  const sibling = await eventually(async () => (await client.call('browsers.list')).find(b => b.connected && b.id !== identity), 'second profile connection');
+  await siblingLaunch.closed;
+  const siblingClient = createClient({ port, browser: sibling.id });
+  const siblingTabs = await siblingClient.call('tabs.list');
+  assert.ok(siblingTabs.length, 'Profile 1 must have an actual window');
+  const siblingProbe = await startProbe('sibling');
+  const attach = launch(['--profile-directory=Default', '--no-startup-window']);
+  await attach.closed;
+  assert.equal((await client.call('browser.info')).id, identity);
+  assert.deepEqual(await client.call('tabs.list'), [], 'No Default window is created alongside Profile 1');
+  assert.deepEqual((await siblingClient.call('tabs.list')).map(t => t.id), siblingTabs.map(t => t.id), 'Sibling tabs remain untouched');
+  await siblingProbe.assertUnchanged();
+  await siblingProbe.stop();
+  console.log('PASS: same Default identity connects without windows; bridge restart, last-window close, and windowless launch alongside Profile 1 preserve foreground; ordinary-launch positive control detects Chrome focus');
 } finally {
   probe?.kill();
   await context?.close();
