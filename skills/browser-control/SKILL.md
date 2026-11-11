@@ -7,6 +7,17 @@ Resolve the repository root as `../..` from this skill directory. Run commands t
 
 Browser calls start the bridge automatically and wait up to 35 seconds for Chrome. No token, pairing, or popup click is needed. Temporary failures reconnect automatically. An explicit popup Pause stays paused until the user resumes it.
 
+Autostart launches the Node bridge only. It cannot load a closed Chrome profile.
+`main` is an extension nickname, not a request to launch Chrome's `Default`
+directory. A disconnected selection timeout is not evidence of a remote grant
+failure. See [local background connection](../../docs/local-background.md).
+The extension popup offers an optional per-profile background permission to keep
+an already-loaded profile available after its windows close. Do not launch or
+focus an owner's Chrome from shell automation to establish access. If setup or
+foreground verification requires desktop UI, record the exact needed step and
+leave it for sanctioned desktop computerUse. Do not assume a minimized launch
+preserves foreground focus.
+
 ## Select and inspect
 
 ```sh
