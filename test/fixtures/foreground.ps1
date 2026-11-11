@@ -13,6 +13,7 @@ public class ForegroundProbe : Form {
     [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
     WinEventDelegate callback;
     IntPtr hook;
     bool recording;
@@ -20,7 +21,12 @@ public class ForegroundProbe : Form {
         Text = "Agent Browser isolated foreground sentinel";
         Width = 540; Height = 160;
         callback = (h, e, hwnd, o, c, t, ms) => {
-            if (recording && hwnd != Handle) File.AppendAllText(events, hwnd.ToInt64() + "\n");
+            if (recording && hwnd != Handle) {
+                uint pid; GetWindowThreadProcessId(hwnd, out pid);
+                string processName = "unknown";
+                try { processName = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch (ArgumentException) {}
+                File.AppendAllText(events, hwnd.ToInt64() + "\t" + processName + "\n");
+            }
         };
         Shown += (s, e) => {
             hook = SetWinEventHook(3, 3, IntPtr.Zero, callback, 0, 0, 0); // EVENT_SYSTEM_FOREGROUND, OUTOFCONTEXT

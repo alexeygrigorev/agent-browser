@@ -22,8 +22,19 @@ let context, browserProcess, probe;
 async function eventually(check, label) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const result = await check();
-    if (result) return result;
+    try {
+      const result = await check();
+      if (result) return result;
+    } catch (error) {
+      // Restarting the bridge invalidates pooled status GET sockets. Retry
+      // only transport resets, never assertions or HTTP/permission errors.
+      let cause = error, transient = false;
+      while (cause) {
+        if (['ECONNRESET', 'ECONNREFUSED', 'UND_ERR_SOCKET', 'EPIPE'].includes(cause.code)) transient = true;
+        cause = cause.cause;
+      }
+      if (!transient) throw error;
+    }
     await delay(100);
   }
   throw new Error('Timed out: ' + label);
@@ -65,7 +76,7 @@ async function startProbe(label) {
       const events = (await readFile(paths.events, 'utf8')).trim();
       assert.equal((await closed)[0], 0, errors);
       probe = undefined;
-      if (expectChange) assert.ok(events, 'Positive control must detect an ordinary Chrome window taking foreground');
+      if (expectChange) assert.match(events, /\tchrome(?:\r?\n|$)/, 'Positive control must detect Chrome taking foreground');
       else { assert.equal(events, ''); assert.equal(final, hwnd, 'Original foreground handle must be preserved'); }
     }
   };
