@@ -244,6 +244,14 @@ test('snapshot, selector click and typing dispatch the expected browser operatio
   assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"selector":"#name"')));
 });
 
+test('click on a background tab activates it first so Chrome accepts the input', async () => {
+  const { calls, command } = await setup();
+  const result = (await command('page.click', { tabId: 8, x: 5, y: 6 })).result;
+  assert.equal(result.activatedTab, true);
+  assert.equal((await command('page.click', { tabId: 8, x: 5, y: 6 })).result.activatedTab, undefined);
+  assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
+});
+
 test('coordinate click, hover and mouse move/down/up dispatch real CDP input events', async () => {
   const { calls, command } = await setup();
   const mouseEvents = () => calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, , params]) => JSON.parse(JSON.stringify(params)));

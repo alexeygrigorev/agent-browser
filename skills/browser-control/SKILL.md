@@ -45,7 +45,7 @@ node bin/cli.js --browser main mouse move 123 400 300
 node bin/cli.js --browser main mouse up 123
 ```
 
-`click` also takes `--count 2`. `mouse down|up` default to the last pointer point and take `--button`. Generic/MCP forms: `page.click`, `page.hover`, `page.mouse` (`action` move/down/up). If they report `Unknown method`, the Chrome extension is outdated (the bridge forwards page methods unchanged). Run `--browser NAME extension reload`, and if that also says `Unknown method`, the extension needs one manual reload in `chrome://extensions` (or a Chrome restart).
+`click` brings a background tab to the front first (`activatedTab: true`), because Chrome ignores input in hidden tabs and downloads/form submits need that user activation; it errors if the target is covered or the tab stays hidden. `click` also takes `--count 2`. `mouse down|up` default to the last pointer point and take `--button`. Generic/MCP forms: `page.click`, `page.hover`, `page.mouse` (`action` move/down/up). If they report `Unknown method`, the Chrome extension is outdated (the bridge forwards page methods unchanged). Run `--browser NAME extension reload`, and if that also says `Unknown method`, the extension needs one manual reload in `chrome://extensions` (or a Chrome restart).
 
 ## Which extension code is live
 

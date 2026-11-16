@@ -120,6 +120,8 @@ node bin/cli.js --browser main mouse move 123 400 300
 node bin/cli.js --browser main mouse up 123
 ```
 
+A click first brings its tab to the front (active tab, focused window; Chrome ignores or defers real input in a hidden tab and grants no user activation, so downloads, popups and form submits silently do nothing). The result then carries `activatedTab: true`. A selector is scrolled into view instantly (smooth-scroll pages would otherwise move it after its box was read), and the click fails loudly if the element has an empty box, something else covers its center, or the tab cannot be made visible. The result includes `target` (e.g. `input#uc-download-link`).
+
 Every click moves the pointer to the target first, so hover state is in place before the press. `mouse down` and `mouse up` default to the last pointer position in that tab and accept `--button left|right|middle`; moves while a button is held report it as a drag. The generic and MCP forms are `page.click`, `page.hover`, and `page.mouse`. After pulling these commands, run `extension reload` (or, for an extension older than that command, reload it once in `chrome://extensions`) so the browser side knows `page.hover` and `page.mouse`. `Unknown method: page.hover` always comes from an outdated extension: the bridge forwards page methods unchanged.
 
 ## Screenshots and video

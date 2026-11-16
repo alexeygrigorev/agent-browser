@@ -252,16 +252,22 @@ function snapshot({ maxLength = 50000 } = {}) {
 function targetAction({ selector, action, text, clear = true }) {
   const element = document.querySelector(selector);
   if (!element) throw new Error(`No element matches ${selector}`);
-  element.scrollIntoView({ block: 'center', inline: 'center' });
-  if (action === 'point') {
+  // 'instant' matters: pages with `scroll-behavior: smooth` (Google Drive's
+  // warning page) would otherwise animate the scroll, and the box read below
+  // would be mid-scroll, so the click landed on empty space and "succeeded".
+  element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  if (action === 'point' || action === 'click') {
     const rect = element.getBoundingClientRect();
-    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    if (!rect.width || !rect.height) throw new Error(`${selector} has an empty box (hidden or zero size)`);
+    const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+    const describe = node => node.localName + (node.id ? `#${node.id}` : '');
+    const hit = document.elementFromPoint(x, y);
+    if (action === 'click' && (!hit || !(element.contains(hit) || hit.contains(element)))) {
+      throw new Error(`${selector} is not clickable at its center (${Math.round(x)},${Math.round(y)}): ${hit ? describe(hit) : 'nothing'} is on top or the point is outside the viewport`);
+    }
+    return { x, y, target: describe(element) };
   }
   element.focus();
-  if (action === 'click') {
-    const rect = element.getBoundingClientRect();
-    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-  }
   if (clear) {
     if (element.isContentEditable) element.textContent = '';
     else {
@@ -302,7 +308,7 @@ function showAgentPointer({ x, y, pressed }) {
 async function point(tabId, params, action = 'point') {
   const target = params.selector ? await pageCall(tabId, targetAction, { selector: params.selector, action }) : params;
   if (!Number.isFinite(target.x) || !Number.isFinite(target.y)) throw new Error('Provide selector or x and y coordinates');
-  return { x: target.x, y: target.y };
+  return { x: target.x, y: target.y, ...(target.target ? { target: target.target } : {}) };
 }
 async function mouse(tabId, type, { x, y }, { button = 'left', clickCount = 1 } = {}) {
   if (type !== 'mouseMoved' && !Object.hasOwn(mouseButtons, button)) throw new Error('button must be left, right, middle, back, or forward');
@@ -317,6 +323,27 @@ async function mouse(tabId, type, { x, y }, { button = 'left', clickCount = 1 } 
   await cdp(tabId, 'Input.dispatchMouseEvent', { type, x, y, buttons, ...(type === 'mouseMoved' ? { button: held || 'none' } : { button, clickCount }) });
   pointers.set(tabId, { x, y, buttons });
   return { x, y };
+}
+
+// Chrome drops or defers real input for a background tab (document.hidden), and
+// it grants no user activation, so a click "succeeds" but downloads, popups and
+// form submits do nothing. Bring the tab to the front before pressing.
+async function ensureForeground(tabId) {
+  const hidden = async () => await pageCall(tabId, () => document.visibilityState).catch(() => 'visible') === 'hidden';
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.active && !await hidden()) return false;
+  if (!tab.active) await chrome.tabs.update(tabId, { active: true });
+  // An active tab in an unfocused, minimized or covered window is still hidden to Chrome.
+  for (const step of [
+    () => cdp(tabId, 'Page.bringToFront'),
+    () => chrome.windows.update(tab.windowId, { focused: true })
+  ]) {
+    if (!await hidden()) break;
+    await step().catch(() => {});
+    for (let i = 0; i < 10 && await hidden(); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  if (await hidden()) throw new Error('Tab stays hidden (its window is minimized or covered), so Chrome would ignore the click; bring the Chrome window to the front and retry');
+  return true;
 }
 
 async function dispatch(method, params = {}) {
@@ -393,6 +420,7 @@ async function dispatch(method, params = {}) {
     return evaluate(tabId, params.expression);
   }
   if (method === 'page.click') {
+    const activated = await ensureForeground(tabId);
     const target = await point(tabId, params, 'click');
     const clickCount = params.clickCount ?? 1;
     if (!Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3) throw new Error('clickCount must be 1, 2, or 3');
@@ -402,12 +430,13 @@ async function dispatch(method, params = {}) {
       await mouse(tabId, 'mousePressed', target, { ...params, clickCount: count });
       await mouse(tabId, 'mouseReleased', target, { ...params, clickCount: count });
     }
-    return { clicked: true, ...target };
+    return { clicked: true, ...target, ...(activated ? { activatedTab: true } : {}) };
   }
   if (method === 'page.hover') return { hovered: true, ...await mouse(tabId, 'mouseMoved', await point(tabId, params)) };
   if (method === 'page.mouse') {
     const types = { move: 'mouseMoved', down: 'mousePressed', up: 'mouseReleased' };
     if (!Object.hasOwn(types, params.action)) throw new Error('action must be move, down, or up');
+    if (params.action !== 'move') await ensureForeground(tabId);
     const last = pointers.get(tabId);
     const target = params.selector || params.x !== undefined || params.y !== undefined || params.action === 'move' || !last ? await point(tabId, params) : last;
     return { action: params.action, ...await mouse(tabId, types[params.action], target, params) };
