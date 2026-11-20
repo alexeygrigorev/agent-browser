@@ -20,6 +20,8 @@ const busyTabs = new Map();
 const commands = new Map();
 const pendingCdp = new Map();
 const CDP_TIMEOUT_MS = 20000;
+const SCREENSHOT_TIMEOUT_MS = 7000;
+const SCREENSHOT_ATTEMPTS = 3;
 let tabIdleMinutes = 15;
 const saveIdleTabs = () => chrome.storage.session.set({ idleTabs: [...idleTabs] });
 async function touchIdleTab(tabId, create = false) {
@@ -88,7 +90,7 @@ async function attach(tabId) {
     await initializing.get(tabId);
   }
 }
-async function cdp(tabId, method, params = {}) {
+async function cdp(tabId, method, params = {}, { timeoutMs = CDP_TIMEOUT_MS, cancelOnTimeout = true } = {}) {
   const requestedGeneration = activeGeneration;
   if (!enabled || activeGeneration !== generation) throw new Error('Browser access was disconnected');
   const id = crypto.randomUUID();
@@ -98,11 +100,16 @@ async function cdp(tabId, method, params = {}) {
     timer = setTimeout(() => {
       // A client HTTP timeout cannot cancel Chrome work. Reject this await so
       // multi-step actions stop, and invalidate work already queued behind it.
-      if (requestedGeneration === generation) generation++;
-      attached.delete(tabId);
-      chrome.debugger.detach({ tabId }).catch(() => {});
-      reject(new Error(`CDP ${method} timed out after ${CDP_TIMEOUT_MS}ms; action may have executed; queued work cancelled`));
-    }, CDP_TIMEOUT_MS);
+      // Idempotent reads (screenshots) opt out so the caller can retry in place.
+      if (cancelOnTimeout) {
+        if (requestedGeneration === generation) generation++;
+        attached.delete(tabId);
+        chrome.debugger.detach({ tabId }).catch(() => {});
+      }
+      const error = new Error(`CDP ${method} timed out after ${timeoutMs}ms${cancelOnTimeout ? '; action may have executed; queued work cancelled' : ''}`);
+      error.cdpTimeout = true;
+      reject(error);
+    }, timeoutMs);
   });
   try {
     return await Promise.race([(async () => {
@@ -249,9 +256,12 @@ function snapshot({ maxLength = 50000 } = {}) {
       type: element.getAttribute('type'), href: element.getAttribute('href') }));
   return { title: document.title, url: location.href, text: (document.body?.innerText || '').slice(0, Math.min(maxLength, 200000)), elements };
 }
-function targetAction({ selector, action, text, clear = true }) {
-  const element = document.querySelector(selector);
-  if (!element) throw new Error(`No element matches ${selector}`);
+function targetAction({ selector, action, text, clear = true, match }) {
+  // `match` filters the selector's matches by visible text, so a re-rendered
+  // list is re-resolved by what the row says rather than by its position.
+  const element = match === undefined ? document.querySelector(selector)
+    : [...document.querySelectorAll(selector)].find(item => item.getClientRects().length && (item.innerText || item.textContent || '').includes(match));
+  if (!element) throw new Error(match === undefined ? `No element matches ${selector}` : `No element matches ${selector} containing text ${JSON.stringify(match)}`);
   // 'instant' matters: pages with `scroll-behavior: smooth` (Google Drive's
   // warning page) would otherwise animate the scroll, and the box read below
   // would be mid-scroll, so the click landed on empty space and "succeeded".
@@ -278,6 +288,77 @@ function targetAction({ selector, action, text, clear = true }) {
     element.dispatchEvent(new Event('input', { bubbles: true }));
   }
   return true;
+}
+
+
+// Atomic click support. Page-side, one evaluate per step, each re-resolving the
+// target so a list that re-renders between steps cannot send the press to a
+// stale position.
+function clickStep({ selector, match, x, y, action, expectHit, clickCount }) {
+  const state = window.__agentBrowserClick;
+  const describe = node => node ? node.localName + (node.id ? `#${node.id}` : '') : 'nothing';
+  const resolve = () => {
+    if (selector) {
+      const element = match === undefined ? document.querySelector(selector)
+        : [...document.querySelectorAll(selector)].find(item => item.getClientRects().length && (item.innerText || item.textContent || '').includes(match));
+      if (!element) throw new Error(match === undefined ? `No element matches ${selector}` : `No element matches ${selector} containing text ${JSON.stringify(match)}`);
+      element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height) throw new Error(`${selector} has an empty box (hidden or zero size)`);
+      const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+      const hit = document.elementFromPoint(cx, cy);
+      if (!hit || !(element.contains(hit) || hit.contains(element) || (element.getRootNode() !== document && element.getRootNode().host?.contains(hit)))) {
+        throw new Error(`${selector} is not clickable at its center (${Math.round(cx)},${Math.round(cy)}): ${describe(hit)} is on top or the point is outside the viewport`);
+      }
+      return { x: cx, y: cy, element, hit };
+    }
+    return { x, y, element: document.elementFromPoint(x, y), hit: document.elementFromPoint(x, y) };
+  };
+  if (action === 'arm') {
+    const target = resolve();
+    for (const type of state?.types || []) window.removeEventListener(type, state.listener, true);
+    const record = { x: target.x, y: target.y, hit: target.hit, landed: false };
+    // Any trusted press/release/click at the point counts: widgets that select on
+    // mousedown remove their row, so no mouse events follows a click that worked.
+    record.listener = event => { if (event.isTrusted && Math.abs(event.clientX - record.x) <= 3 && Math.abs(event.clientY - record.y) <= 3) record.landed = true; };
+    record.types = ['pointerdown', 'mousedown', 'mouseup', 'click'];
+    for (const type of record.types) window.addEventListener(type, record.listener, true);
+    window.__agentBrowserClick = record;
+    return { x: target.x, y: target.y, target: describe(target.element), frame: target.hit?.localName === 'iframe' };
+  }
+  if (action === 'confirm') {
+    // Called right before the press: the target must still be what was armed, where it was armed.
+    if (!state) return { ok: false, reason: 'not armed' };
+    let target;
+    try { target = resolve(); } catch (error) { return { ok: false, reason: error.message }; }
+    const moved = Math.abs(target.x - state.x) > 1 || Math.abs(target.y - state.y) > 1;
+    const replaced = target.hit !== state.hit;
+    if (!moved && !replaced) return { ok: true, x: state.x, y: state.y };
+    return { ok: false, reason: moved ? 'target moved (page re-rendered)' : 'element at the point was replaced (page re-rendered)', x: target.x, y: target.y };
+  }
+  if (action === 'landing') {
+    for (const type of state?.types || []) window.removeEventListener(type, state.listener, true);
+    delete window.__agentBrowserClick;
+    return { landed: !!state?.landed };
+  }
+  if (action === 'synthetic') {
+    const target = resolve();
+    const element = target.element;
+    if (!element) throw new Error('No element at the requested point');
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: target.x, clientY: target.y, screenX: target.x + screenX, screenY: target.y + screenY, button: 0 };
+    const mouse = (type, extra = {}) => element.dispatchEvent(new MouseEvent(type, { ...base, ...extra }));
+    const pointer = (type, extra = {}) => element.dispatchEvent(new PointerEvent(type, { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, ...extra }));
+    pointer('pointerover'); mouse('mouseover'); pointer('pointermove'); mouse('mousemove');
+    for (let count = 1; count <= (clickCount || 1); count++) {
+      pointer('pointerdown', { buttons: 1, detail: count }); mouse('mousedown', { buttons: 1, detail: count });
+      if (count === 1 && typeof element.focus === 'function') element.focus({ preventScroll: true });
+      pointer('pointerup', { detail: count }); mouse('mouseup', { detail: count });
+      mouse('click', { detail: count });
+    }
+    if (clickCount === 2) mouse('dblclick', { detail: 2 });
+    return { x: target.x, y: target.y, target: describe(element) };
+  }
+  throw new Error(`Unknown click step ${action}`);
 }
 
 // Pointer position and held buttons per tab, so hover menus and drags see one
@@ -323,6 +404,115 @@ async function mouse(tabId, type, { x, y }, { button = 'left', clickCount = 1 } 
   await cdp(tabId, 'Input.dispatchMouseEvent', { type, x, y, buttons, ...(type === 'mouseMoved' ? { button: held || 'none' } : { button, clickCount }) });
   pointers.set(tabId, { x, y, buttons });
   return { x, y };
+}
+
+
+const CLICK_ATTEMPTS = 4;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Resolves the target, arms a landing detector, moves, re-confirms the target
+// right before pressing, then presses. A mismatch (the list re-rendered) or a
+// covered target re-resolves and retries. If a real left click produced no
+// trusted click event, the bridge falls back to a synthetic MouseEvent sequence.
+async function click(tabId, params) {
+  const clickCount = params.clickCount ?? 1;
+  if (!Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3) throw new Error('clickCount must be 1, 2, or 3');
+  const mode = params.mode ?? 'auto';
+  if (!['auto', 'real', 'synthetic'].includes(mode)) throw new Error('mode must be auto, real, or synthetic');
+  if (params.match !== undefined && (typeof params.match !== 'string' || !params.selector)) throw new Error('match is text filter for selector and requires a selector');
+  if (!params.selector && !(Number.isFinite(params.x) && Number.isFinite(params.y))) throw new Error('Provide selector or x and y coordinates');
+  const activated = await ensureForeground(tabId);
+  const step = (action, extra = {}) => pageCall(tabId, clickStep, { selector: params.selector, match: params.match, x: params.x, y: params.y, clickCount, ...extra, action });
+  const result = extra => ({ clicked: true, ...extra, ...(activated ? { activatedTab: true } : {}) });
+  if (mode === 'synthetic') return result({ ...await step('synthetic'), method: 'synthetic', attempts: 1 });
+  let lastError, pressed = false;
+  for (let attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++) {
+    try {
+      const armed = await step('arm');
+      let target = { x: armed.x, y: armed.y };
+      await mouse(tabId, 'mouseMoved', target);
+      // The hover itself can re-render a list; confirm at press time, not before.
+      const confirm = await step('confirm');
+      if (!confirm.ok) {
+        lastError = new Error(`click target changed before press: ${confirm.reason}`);
+        await step('landing').catch(() => {});
+        await sleep(60 * attempt);
+        continue;
+      }
+      pressed = true;
+      for (let count = 1; count <= clickCount; count++) {
+        await mouse(tabId, 'mousePressed', target, { ...params, clickCount: count });
+        await mouse(tabId, 'mouseReleased', target, { ...params, clickCount: count });
+      }
+      if (armed.frame || (params.button && params.button !== 'left')) return result({ ...target, target: armed.target, method: 'real', attempts: attempt });
+      // A click may navigate away and destroy the page, which counts as landed.
+      const landing = await step('landing').catch(() => ({ landed: true }));
+      if (landing.landed) return result({ ...target, target: armed.target, method: 'real', attempts: attempt });
+      if (mode === 'real' || params.fallback === false) throw new Error(`Real click at (${Math.round(target.x)},${Math.round(target.y)}) produced no mouse events; synthetic fallback disabled`);
+      return result({ ...await step('synthetic'), method: 'synthetic', fallback: 'real click produced no mouse events', attempts: attempt });
+    } catch (error) {
+      await step('landing').catch(() => {});
+      // Once the button went down, retrying could click twice.
+      if (pressed || error.cdpTimeout || /disconnected|^Real click/.test(error.message)) throw error;
+      lastError = error;
+      await sleep(60 * attempt);
+    }
+  }
+  throw new Error(`${lastError.message} (gave up after ${CLICK_ATTEMPTS} attempts)`);
+}
+
+
+const keyCodes = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, ' ': 32, Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45 };
+const modifierBits = { Alt: 1, Control: 2, Ctrl: 2, Meta: 4, Cmd: 4, Shift: 8 };
+// Accepts "Enter", "ArrowDown", "a", or a combo such as "Control+a" / "Shift+Tab".
+async function pressKey(tabId, params) {
+  const parts = params.key.length > 1 && params.key.includes('+') ? params.key.split('+') : [params.key];
+  const name = parts.pop();
+  let modifiers = params.modifiers || 0;
+  for (const part of parts) {
+    if (!Object.hasOwn(modifierBits, part)) throw new Error(`Unknown modifier ${part}; use Alt, Control, Meta, or Shift`);
+    modifiers |= modifierBits[part];
+  }
+  const printable = name.length === 1;
+  const code = params.code || (/^[a-z]$/i.test(name) ? `Key${name.toUpperCase()}` : /^[0-9]$/.test(name) ? `Digit${name}` : name === ' ' ? 'Space' : name);
+  const key = { key: name, code, windowsVirtualKeyCode: keyCodes[name] || (printable ? name.toUpperCase().charCodeAt(0) : 0), modifiers };
+  // Characters typed with Control/Alt/Meta held produce shortcuts, not text.
+  const text = name === 'Enter' ? '\r' : printable && !(modifiers & 7) ? name : undefined;
+  await cdp(tabId, 'Input.dispatchKeyEvent', { ...key, type: text === undefined ? 'rawKeyDown' : 'keyDown', ...(text === undefined ? {} : { text }) });
+  await cdp(tabId, 'Input.dispatchKeyEvent', { ...key, type: 'keyUp' });
+}
+
+
+// chrome.tabs.update resolves before the page has rendered, and a hash-only
+// change on a single-page app (Gmail threads) never reports a load at all. Wait
+// until the tab reports the target URL, the document is complete and, where the
+// page is known (Gmail thread) or the caller names it (`waitFor`), the content exists.
+function navigationState({ url, waitFor }) {
+  const wanted = new URL(url, location.href);
+  // Gmail rewrites legacy thread ids in the hash, so for it only the path and search must match.
+  const gmail = location.hostname === 'mail.google.com';
+  const sameUrl = location.origin === wanted.origin && location.pathname === wanted.pathname && location.search === wanted.search && (gmail || location.hash === wanted.hash);
+  let selector = waitFor;
+  // Gmail thread deep links look like #inbox/<id>, #all/<id>, #search/<q>/<id>.
+  if (!selector && location.hostname === 'mail.google.com' && /^#[^/]+\/(?:[^/]+\/)?[A-Za-z0-9_-]{16,}$/.test(wanted.hash)) selector = 'h2.hP';
+  return { url: location.href, title: document.title, ready: document.readyState === 'complete', sameUrl, selector: selector || null, present: selector ? !!document.querySelector(selector) : true };
+}
+async function settleNavigation(tabId, params) {
+  const timeoutMs = params.timeoutMs ?? 15000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 25000) throw new Error('timeoutMs must be an integer from 1000 to 25000');
+  if (params.waitFor !== undefined && (typeof params.waitFor !== 'string' || !params.waitFor)) throw new Error('waitFor must be a CSS selector');
+  const deadline = Date.now() + timeoutMs;
+  let state, reloaded = false;
+  while (Date.now() < deadline) {
+    state = await pageCall(tabId, navigationState, { url: params.url, waitFor: params.waitFor }).catch(() => undefined);
+    if (state?.ready && state.sameUrl && state.present) return { settled: true, url: state.url, title: state.title, status: 'complete', ...(reloaded ? { reloaded } : {}) };
+    // A background single-page app can ignore a hash-only change; one reload renders it.
+    if (!reloaded && state?.ready && state.selector && !state.present && Date.now() > deadline - timeoutMs / 2) {
+      reloaded = true;
+      try { await chrome.tabs.reload(tabId); } catch { /* the tab may have gone */ }
+    }
+    await sleep(250);
+  }
+  return { settled: false, url: state?.url, title: state?.title, ...(state?.selector && !state.present ? { missing: state.selector } : {}), status: 'timeout', ...(reloaded ? { reloaded } : {}) };
 }
 
 // Chrome drops or defers real input for a background tab (document.hidden), and
@@ -411,7 +601,9 @@ async function dispatch(method, params = {}) {
   }
   if (method === 'tabs.navigate') {
     await manageTab(tabId);
-    return chrome.tabs.update(tabId, { url: params.url });
+    const updated = await chrome.tabs.update(tabId, { url: params.url });
+    if (params.wait === false) return updated;
+    return { ...updated, ...await settleNavigation(tabId, params) };
   }
   if (method === 'page.upload') return upload(tabId, params);
   if (method === 'page.snapshot') return pageCall(tabId, snapshot, params);
@@ -419,19 +611,7 @@ async function dispatch(method, params = {}) {
     if (typeof params.expression !== 'string') throw new Error('expression must be a string');
     return evaluate(tabId, params.expression);
   }
-  if (method === 'page.click') {
-    const activated = await ensureForeground(tabId);
-    const target = await point(tabId, params, 'click');
-    const clickCount = params.clickCount ?? 1;
-    if (!Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3) throw new Error('clickCount must be 1, 2, or 3');
-    await mouse(tabId, 'mouseMoved', target);
-    // A real double click is two press/release pairs with an increasing count.
-    for (let count = 1; count <= clickCount; count++) {
-      await mouse(tabId, 'mousePressed', target, { ...params, clickCount: count });
-      await mouse(tabId, 'mouseReleased', target, { ...params, clickCount: count });
-    }
-    return { clicked: true, ...target, ...(activated ? { activatedTab: true } : {}) };
-  }
+  if (method === 'page.click') return click(tabId, params);
   if (method === 'page.hover') return { hovered: true, ...await mouse(tabId, 'mouseMoved', await point(tabId, params)) };
   if (method === 'page.mouse') {
     const types = { move: 'mouseMoved', down: 'mousePressed', up: 'mouseReleased' };
@@ -444,16 +624,21 @@ async function dispatch(method, params = {}) {
   if (method === 'page.type') {
     if (typeof params.text !== 'string') throw new Error('text must be a string');
     if (params.selector) await pageCall(tabId, targetAction, { ...params, action: 'type' });
+    // `keys` sends real keydown/keypress/keyup per character, which is what
+    // comboboxes and autocompletes listen to; the default inserts text in one go.
+    if (params.keys) {
+      for (const char of params.text) await pressKey(tabId, { key: char === '\n' ? 'Enter' : char });
+      return { typed: true, keys: true };
+    }
     await cdp(tabId, 'Input.insertText', { text: params.text });
     return { typed: true };
   }
   if (method === 'page.key') {
-    const keys = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, ' ': 32 };
-    if (typeof params.key !== 'string') throw new Error('key must be a string');
-    const key = { key: params.key, code: params.code || params.key, windowsVirtualKeyCode: keys[params.key] || (params.key.length === 1 ? params.key.toUpperCase().charCodeAt(0) : 0), modifiers: params.modifiers || 0 };
-    await cdp(tabId, 'Input.dispatchKeyEvent', { ...key, type: 'keyDown', ...(params.key === 'Enter' ? { text: '\r' } : params.key.length === 1 && !params.modifiers ? { text: params.key } : {}) });
-    await cdp(tabId, 'Input.dispatchKeyEvent', { ...key, type: 'keyUp' });
-    return { pressed: true };
+    if (typeof params.key !== 'string' || !params.key) throw new Error('key must be a string');
+    const count = params.count ?? 1;
+    if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('count must be an integer from 1 to 100');
+    for (let i = 0; i < count; i++) await pressKey(tabId, params);
+    return { pressed: true, ...(count > 1 ? { count } : {}) };
   }
   if (method === 'page.scroll') return pageCall(tabId, ({ x = 0, y = 600 }) => { window.scrollBy(x, y); return { x: scrollX, y: scrollY }; }, params);
   if (method === 'page.screenshot') {
@@ -463,7 +648,22 @@ async function dispatch(method, params = {}) {
       const size = layout.cssContentSize || layout.contentSize;
       clip = { x: size.x, y: size.y, width: size.width, height: size.height, scale: 1 };
     }
-    return cdp(tabId, 'Page.captureScreenshot', { format: params.format || 'png', ...(params.quality === undefined ? {} : { quality: params.quality }), ...(clip ? { clip } : {}), captureBeyondViewport: !!params.fullPage });
+    const capture = { format: params.format || 'png', ...(params.quality === undefined ? {} : { quality: params.quality }), ...(clip ? { clip } : {}), captureBeyondViewport: !!params.fullPage };
+    // Page.captureScreenshot hangs on a background or just-navigated tab. It is a
+    // read, so retry it in place instead of failing and cancelling queued work.
+    let lastError;
+    for (let attempt = 1; attempt <= SCREENSHOT_ATTEMPTS; attempt++) {
+      try {
+        const image = await cdp(tabId, 'Page.captureScreenshot', capture, { timeoutMs: SCREENSHOT_TIMEOUT_MS, cancelOnTimeout: false });
+        return attempt > 1 ? { ...image, attempts: attempt } : image;
+      } catch (error) {
+        if (!error.cdpTimeout) throw error;
+        lastError = error;
+        await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+        await cdp(tabId, 'Page.bringToFront', {}, { timeoutMs: 3000, cancelOnTimeout: false }).catch(() => {});
+      }
+    }
+    throw new Error(`Page.captureScreenshot timed out ${SCREENSHOT_ATTEMPTS} times (${SCREENSHOT_TIMEOUT_MS}ms each); the tab may be hidden, frozen or busy. ${lastError.message}`);
   }
   if (method === 'cdp.send') {
     if (typeof params.method !== 'string') throw new Error('CDP method must be a string');

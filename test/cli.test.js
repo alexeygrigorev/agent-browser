@@ -139,6 +139,11 @@ test('CLI click, hover and mouse commands send coordinate and selector input par
   const commands = [
     [['--browser', 'orin', 'click', '7', '120.5', '64'], { method: 'page.click', params: { tabId: 7, x: 120.5, y: 64 }, browser: 'orin' }],
     [['click', '7', 'button.menu', '--button', 'right', '--count', '2'], { method: 'page.click', params: { tabId: 7, button: 'right', clickCount: 2, selector: 'button.menu' } }],
+    [['click', '7', 'li[role=option]', '--text', 'Germany', '--synthetic', '--no-fallback'], { method: 'page.click', params: { tabId: 7, match: 'Germany', mode: 'synthetic', fallback: false, selector: 'li[role=option]' } }],
+    [['key', '7', 'ArrowDown', '--count', '3'], { method: 'page.key', params: { tabId: 7, key: 'ArrowDown', count: 3 } }],
+    [['key', '7', 'Enter'], { method: 'page.key', params: { tabId: 7, key: 'Enter' } }],
+    [['type', '7', 'Ger', '--selector', '#country', '--keys', '--keep'], { method: 'page.type', params: { tabId: 7, text: 'Ger', selector: '#country', keys: true, clear: false } }],
+    [['navigate', '7', 'https://mail.google.com/mail/u/0/#all/abc', '--wait-for', 'h2.hP'], { method: 'tabs.navigate', params: { tabId: 7, url: 'https://mail.google.com/mail/u/0/#all/abc', waitFor: 'h2.hP' } }],
     [['hover', '7', '300', '40'], { method: 'page.hover', params: { tabId: 7, x: 300, y: 40 } }],
     [['hover', '7', '#side [aria-label="Open"]'], { method: 'page.hover', params: { tabId: 7, selector: '#side [aria-label="Open"]' } }],
     [['mouse', 'move', '7', '10', '20'], { method: 'page.mouse', params: { tabId: 7, action: 'move', x: 10, y: 20 } }],
@@ -154,6 +159,12 @@ test('CLI click, hover and mouse commands send coordinate and selector input par
     const result = await run(['--no-autostart', ...args], '', env);
     assert.equal(result.code, 1, args.join(' '));
     assert.match(result.stderr, /^Usage: (click|hover|mouse)/);
+  }
+  assert.equal(requests.length, commands.length);
+  for (const [args, usage] of [[['key', '7'], /^Usage: key/], [['key', '7', 'a', '--count', '0'], /^Usage: key/], [['type', '7'], /^Usage: type/], [['type', '7', 'x', '--bogus'], /^Usage: type/], [['navigate', '7'], /^Usage: navigate/], [['click', '7', '1', '2', '--text', 'x'], /^Usage: click/]]) {
+    const result = await run(['--no-autostart', ...args], '', env);
+    assert.equal(result.code, 1, args.join(' '));
+    assert.match(result.stderr, usage);
   }
   assert.equal(requests.length, commands.length);
 });

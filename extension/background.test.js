@@ -6,7 +6,7 @@ import { randomUUID, webcrypto } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { localCode } from '../src/extension-code.js';
 
-async function setup({ beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) }, sessionConfig = {}, initialGroups = [], uploadNode = { localName: 'input', attributes: ['type', 'file', 'multiple', ''] } } = {}) {
+async function setup({ clickStep = step => step.action === 'confirm' ? { ok: true } : step.action === 'landing' ? { landed: true } : { x: step.x ?? 25, y: step.y ?? 40, target: 'button' }, beforeCommand = async () => {}, config = { enabled: true, token: 'a'.repeat(32) }, sessionConfig = {}, initialGroups = [], uploadNode = { localName: 'input', attributes: ['type', 'file', 'multiple', ''] } } = {}) {
   const calls = [];
   const stored = { ...config };
   let listener;
@@ -48,8 +48,10 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
         if (method === 'Runtime.callFunctionOn') return { result: { value: { files: [{ name: 'report.txt', size: 12, type: 'text/plain' }] } } };
         if (method === 'Page.getLayoutMetrics') return { cssContentSize: { x: 0, y: 0, width: 1200, height: 4000 } };
         if (method === 'Runtime.evaluate') {
-          const value = params.expression.includes('function snapshot') ? { title: 'Page', text: 'Signed in', elements: [] }
-            : /"action":"(click|point)"/.test(params.expression) ? { x: 25, y: 40 } : 'evaluated';
+          const value = params.expression.includes('function navigationState') ? { url: JSON.parse(params.expression.match(/\)\((\{.*\})\)$/s)[1]).url, title: 'Loaded', ready: true, sameUrl: true, selector: null, present: true }
+            : params.expression.includes('function clickStep') ? clickStep(JSON.parse(params.expression.match(/\)\((\{.*\})\)$/s)[1]))
+            : params.expression.includes('function snapshot') ? { title: 'Page', text: 'Signed in', elements: [] }
+            : /"action":"point"/.test(params.expression) ? { x: 25, y: 40 } : 'evaluated';
           return { result: { value } };
         }
         return { data: 'image' };
@@ -106,7 +108,7 @@ async function setup({ beforeCommand = async () => {}, config = { enabled: true,
   // Serves the real extension files, as the unpacked extension would from disk.
   const fetch = async url => { const text = await readFile(new URL(`./${url.split('/').pop()}`, import.meta.url), 'utf8'); return { text: async () => text }; };
   const context = vm.createContext({ chrome, WebSocket, fetch, TextEncoder, crypto: { subtle: webcrypto.subtle, randomUUID: () => { generatedIds++; return randomUUID(); } }, setInterval: () => 1, clearInterval() {},
-    setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; },
+    setTimeout: (fn, delay) => { /* click/navigation back-off waits fire at once */ if ([50, 60, 120, 180, 240, 250].includes(delay)) { setImmediate(fn); return 0; } timers.set(++timerId, { fn, delay }); return timerId; },
     clearTimeout: id => timers.delete(id)
   });
   vm.runInContext(await readFile(new URL('./background.js', import.meta.url), 'utf8'), context);
@@ -255,7 +257,7 @@ test('click on a background tab activates it first so Chrome accepts the input',
 test('coordinate click, hover and mouse move/down/up dispatch real CDP input events', async () => {
   const { calls, command } = await setup();
   const mouseEvents = () => calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, , params]) => JSON.parse(JSON.stringify(params)));
-  assert.deepEqual((await command('page.click', { tabId: 7, x: 120.5, y: 64, button: 'right' })).result, { clicked: true, x: 120.5, y: 64 });
+  assert.deepEqual((await command('page.click', { tabId: 7, x: 120.5, y: 64, button: 'right' })).result, { clicked: true, x: 120.5, y: 64, target: 'button', method: 'real', attempts: 1 });
   assert.deepEqual(mouseEvents(), [
     { type: 'mouseMoved', x: 120.5, y: 64, buttons: 0, button: 'none' },
     { type: 'mousePressed', x: 120.5, y: 64, buttons: 2, button: 'right', clickCount: 1 },
@@ -637,4 +639,88 @@ test('user activation and audible media delay cleanup; popups inherit agent owne
   s.advance(16 * 60000); await s.alarm('idle-tabs'); assert.ok(s.tabs.has(20));
   s.tabs.get(20).audible = false;
   s.advance(16 * 60000); await s.alarm('idle-tabs'); assert.ok(!s.tabs.has(20));
+});
+
+const sleepless = () => new Promise(resolve => setImmediate(resolve));
+
+test('a click re-resolves and retries when the list re-renders between resolve and press', async () => {
+  let confirms = 0;
+  const { calls, command } = await setup({ clickStep: step => {
+    if (step.action === 'arm') return { x: 30 + confirms * 10, y: 50, target: 'li#row' };
+    if (step.action === 'confirm') return ++confirms < 3 ? { ok: false, reason: 'target moved (page re-rendered)', x: 30 + confirms * 10, y: 50 } : { ok: true };
+    return { landed: true };
+  } });
+  const result = (await command('page.click', { tabId: 7, selector: 'li#row', match: 'Germany' })).result;
+  assert.equal(result.method, 'real');
+  assert.equal(result.attempts, 3);
+  const presses = calls.filter(([method, , params]) => method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed');
+  assert.equal(presses.length, 1, 'only the confirmed attempt presses');
+  assert.equal(presses[0][2].x, 50);
+  const arm = calls.find(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"action":"arm"'));
+  assert.ok(arm[2].expression.includes('"match":"Germany"'));
+});
+
+test('a click that keeps mismatching fails loudly after its attempts without pressing', async () => {
+  const { calls, command } = await setup({ clickStep: step => step.action === 'arm' ? { x: 1, y: 2 } : step.action === 'confirm' ? { ok: false, reason: 'target moved (page re-rendered)' } : {} });
+  assert.match((await command('page.click', { tabId: 7, selector: '#id' })).error, /target moved.*gave up after 4 attempts/);
+  assert.ok(!calls.some(([method, , params]) => method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed'));
+});
+
+test('a real click that produces no mouse events falls back to a synthetic mouse event sequence', async () => {
+  const { calls, command } = await setup({ clickStep: step => step.action === 'landing' ? { landed: false } : step.action === 'confirm' ? { ok: true } : { x: 5, y: 6, target: 'li' } });
+  const result = (await command('page.click', { tabId: 7, selector: 'li' })).result;
+  assert.equal(result.method, 'synthetic');
+  assert.match(result.fallback, /no mouse events/);
+  assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"action":"synthetic"')));
+  calls.length = 0;
+  assert.match((await command('page.click', { tabId: 7, selector: 'li', fallback: false })).error, /synthetic fallback disabled/);
+  assert.ok(!calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"action":"synthetic"')));
+  calls.length = 0;
+  const forced = (await command('page.click', { tabId: 7, selector: 'li', mode: 'synthetic' })).result;
+  assert.equal(forced.method, 'synthetic');
+  assert.ok(!calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
+  assert.match((await command('page.click', { tabId: 7, selector: 'li', mode: 'bogus' })).error, /mode must be/);
+});
+
+test('page.key sends real key events with combos and repeat; page.type can send per-character key events', async () => {
+  const { calls, command } = await setup();
+  const keys = () => calls.filter(([method]) => method === 'Input.dispatchKeyEvent').map(([, , params]) => JSON.parse(JSON.stringify(params)));
+  await command('page.key', { tabId: 7, key: 'ArrowDown', count: 2 });
+  assert.deepEqual(keys().map(event => [event.type, event.key, event.windowsVirtualKeyCode]), [['rawKeyDown', 'ArrowDown', 40], ['keyUp', 'ArrowDown', 40], ['rawKeyDown', 'ArrowDown', 40], ['keyUp', 'ArrowDown', 40]]);
+  calls.length = 0;
+  await command('page.key', { tabId: 7, key: 'Enter' });
+  assert.deepEqual(keys().map(event => [event.type, event.text]), [['keyDown', '\r'], ['keyUp', undefined]]);
+  calls.length = 0;
+  await command('page.key', { tabId: 7, key: 'Control+a' });
+  assert.equal(keys()[0].modifiers, 2);
+  assert.equal(keys()[0].code, 'KeyA');
+  assert.equal(keys()[0].text, undefined);
+  assert.match((await command('page.key', { tabId: 7, key: 'Hyper+a' })).error, /Unknown modifier/);
+  calls.length = 0;
+  assert.equal((await command('page.type', { tabId: 7, text: 'Ge', keys: true })).result.keys, true);
+  assert.deepEqual(keys().filter(event => event.type === 'keyDown').map(event => event.text), ['G', 'e']);
+  assert.ok(!calls.some(([method]) => method === 'Input.insertText'));
+});
+
+test('screenshots retry in place after a CDP timeout without cancelling queued work', async () => {
+  let captures = 0;
+  const { calls, command, runTimer } = await setup({ beforeCommand: method => method === 'Page.captureScreenshot' && ++captures <= 2 ? new Promise(() => {}) : undefined });
+  const pending = command('page.screenshot', { tabId: 7 });
+  for (let i = 0; i < 2; i++) { await sleepless(); await sleepless(); await runTimer(7000); }
+  const result = (await pending).result;
+  assert.equal(result.data, 'image');
+  assert.equal(result.attempts, 3);
+  assert.equal(calls.filter(([method]) => method === 'Page.captureScreenshot').length, 3);
+  assert.equal(calls.filter(([method]) => method === 'detach').length, 0, 'a retried read does not detach the debugger');
+  assert.equal((await command('page.evaluate', { tabId: 7, expression: '1' })).result, 'evaluated', 'queue still works afterwards');
+});
+
+test('tabs.navigate waits for the page to settle and reports the final URL', async () => {
+  const { calls, command } = await setup();
+  const result = (await command('tabs.navigate', { tabId: 7, url: 'https://mail.google.com/mail/u/0/#all/FMfcgzQjgzprVDklJWDVxzdxzjGgmVKr' })).result;
+  assert.equal(result.settled, true);
+  assert.equal(result.title, 'Loaded');
+  assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('function navigationState')));
+  assert.equal((await command('tabs.navigate', { tabId: 7, url: 'https://example.com/x', wait: false })).result.url, 'https://example.com/x');
+  assert.match((await command('tabs.navigate', { tabId: 7, url: 'https://example.com/y', timeoutMs: 5 })).error, /timeoutMs/);
 });
