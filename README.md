@@ -124,6 +124,25 @@ A click first brings its tab to the front (active tab, focused window; Chrome ig
 
 Every click moves the pointer to the target first, so hover state is in place before the press. `mouse down` and `mouse up` default to the last pointer position in that tab and accept `--button left|right|middle`; moves while a button is held report it as a drag. The generic and MCP forms are `page.click`, `page.hover`, and `page.mouse`. After pulling these commands, run `extension reload` (or, for an extension older than that command, reload it once in `chrome://extensions`) so the browser side knows `page.hover` and `page.mouse`. `Unknown method: page.hover` always comes from an outdated extension: the bridge forwards page methods unchanged.
 
+### Clicks that survive re-rendering, synthetic fallback, keyboard, deep links
+
+Single-page apps (Finom comboboxes, Gmail) replace rows between the moment a position is read and the moment it is clicked. `click` therefore resolves its target again right before pressing: it arms the target, moves the pointer (a hover can itself re-render a list), confirms that the same element is still at the same point, and only then presses. If the page changed it re-resolves and retries (up to 4 attempts, `attempts` in the result); if it never stabilises it fails without pressing. A selector can carry a text filter that is re-evaluated each attempt, which is the reliable way to pick a row of a list that re-renders: `click 123 'li[role=option]' --text Germany`. A bare coordinate click can only confirm that the element under the point did not change.
+
+If a real left click produced no mouse event at all at the target (the page swallowed it), `click` falls back to a synthetic `pointerover/mouseover/pointerdown/mousedown/focus/pointerup/mouseup/click` sequence on the element and reports `method: "synthetic"` with the reason. `--real` turns the fallback off (the click then fails), `--synthetic` skips the real click. Cross-origin iframes and non-left buttons are never second-guessed.
+
+```sh
+node bin/cli.js --browser main key 123 ArrowDown --count 2    # real key events; also Enter, Escape, Tab, a, Control+a, Shift+Tab
+node bin/cli.js --browser main key 123 Enter
+node bin/cli.js --browser main type 123 'Ger' --selector '#country' --keys   # per-character keydown/keyup, for comboboxes and autocompletes
+node bin/cli.js --browser main type 123 'text' --selector 'textarea'         # one insertText; --keep does not clear first
+node bin/cli.js --browser main navigate 123 'https://mail.google.com/mail/u/0/#all/FMfcg...'
+node bin/cli.js --browser main navigate 123 https://example.com/app --wait-for '#ready'
+```
+
+`key` and `type --keys` send trusted `Input.dispatchKeyEvent` input; `dispatchEvent(new KeyboardEvent(...))` from `page.evaluate` is untrusted and many comboboxes ignore it. `navigate` (`tabs.navigate`) waits until the tab is on the target URL, the document is complete and, for Gmail thread links (or any page with `--wait-for` / `waitFor`), the thread heading exists. A page that ignores a hash-only change gets one reload. The result has `settled` (`false` plus `missing` on timeout), the final `url` and `title`; `--no-wait` returns immediately.
+
+Screenshots (`Page.captureScreenshot`) hang on hidden or just-navigated tabs. The bridge retries them in place up to three times with a 7 second limit each, activating the tab between attempts, without detaching the debugger or cancelling queued commands. A retried result carries `attempts`; three timeouts end in an error that says so.
+
 ## Screenshots and video
 
 Get a tab ID from `tabs.list`, then save a screenshot directly to a new file:
@@ -259,17 +278,17 @@ Pass parameters as one JSON object after the method name. Get tab IDs from `tabs
 | `tabs.list` | `{}` |
 | `tabs.create` | `url?`, `active?` |
 | `tabs.close` | `tabId` |
-| `tabs.navigate` | `tabId`, `url` |
+| `tabs.navigate` | `tabId`, `url`, `waitFor?` (CSS selector), `wait?` (false returns immediately), `timeoutMs?` (1000-25000, default 15000); returns once the page rendered, with `settled`, final `url`, `title` |
 | `dialogs.handle` | `tabId`, `accept`, `promptText?`; handles a JavaScript dialog immediately, even while another page action is waiting |
 | `page.snapshot` | `tabId`, `maxLength?`; returns page text and interactive element selectors |
-| `page.click` | `tabId`, `selector` or `x`, `y` (viewport CSS px), `button?` (`left`, `right`, `middle`, `back`, `forward`), `clickCount?` (1-3; 2 is a double click); moves, presses, and releases real mouse input |
+| `page.click` | `tabId`, `selector` or `x`, `y` (viewport CSS px), `button?` (`left`, `right`, `middle`, `back`, `forward`), `clickCount?` (1-3; 2 is a double click), `match?` (with `selector`: the match whose text contains it), `mode?` (`auto`, `real`, `synthetic`), `fallback?` (false disables the synthetic fallback); re-resolves and confirms the target at press time, retries on re-render, then presses real mouse input |
 | `page.hover` | `tabId`, `selector` or `x`, `y`; moves the real mouse pointer there |
 | `page.mouse` | `tabId`, `action` (`move`, `down`, `up`), `selector` or `x`, `y` (optional for `down`/`up`: last pointer position), `button?`, `clickCount?` |
-| `page.type` | `tabId`, `text`, `selector?`, `clear?` (defaults to true) |
-| `page.key` | `tabId`, `key`, `code?`, `modifiers?` (numeric CDP bitmask) |
+| `page.type` | `tabId`, `text`, `selector?`, `clear?` (defaults to true), `keys?` (real key events per character) |
+| `page.key` | `tabId`, `key` (`Enter`, `ArrowDown`, `a`, or a combo such as `Control+a`), `count?`, `code?`, `modifiers?` (numeric CDP bitmask) |
 | `page.scroll` | `tabId`, `x?`, `y?` (defaults to 600) |
 | `page.evaluate` | `tabId`, `expression` |
-| `page.screenshot` | `tabId`, `format?` (defaults to png), `quality?`, `fullPage?`; returns base64 `data` |
+| `page.screenshot` | `tabId`, `format?` (defaults to png), `quality?`, `fullPage?`; returns base64 `data`; retried in place after a CDP timeout (`attempts`) |
 | `page.upload` | `tabId`, `selector`, `files`; absolute paths on the Chrome computer; prefer CLI `upload` or MCP `page_upload` for client files |
 | `downloads.start` | `url`, `filename?`; starts a Chrome download |
 | `downloads.list` | `limit?`, `state?`; returns download metadata |

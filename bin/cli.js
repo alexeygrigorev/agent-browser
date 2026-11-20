@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 const pointerUsage = {
-  click: 'Usage: click <tabId> <selector>|<x> <y> [--button left|right|middle] [--count <n>]',
+  click: 'Usage: click <tabId> <selector>|<x> <y> [--button left|right|middle] [--count <n>] [--text <contains>] [--real|--synthetic] [--no-fallback]',
   hover: 'Usage: hover <tabId> <selector>|<x> <y>',
   mouse: 'Usage: mouse move <tabId> <selector>|<x> <y> | mouse down|up <tabId> [<selector>|<x> <y>] [--button left|right|middle]'
 };
@@ -25,6 +25,10 @@ function pointerParams(command, args) {
     const arg = rest.shift();
     if (arg === '--button' && (command === 'click' || ['down', 'up'].includes(params.action)) && rest.length) params.button = rest.shift();
     else if (arg === '--count' && command === 'click' && /^[1-9][0-9]*$/.test(rest[0] || '')) params.clickCount = Number(rest.shift());
+    else if (arg === '--text' && command === 'click' && rest.length) params.match = rest.shift();
+    else if (arg === '--real' && command === 'click') params.mode = 'real';
+    else if (arg === '--synthetic' && command === 'click') params.mode = 'synthetic';
+    else if (arg === '--no-fallback' && command === 'click') params.fallback = false;
     else if (arg.startsWith('--')) throw new Error(usage);
     else positional.push(arg);
   }
@@ -34,6 +38,7 @@ function pointerParams(command, args) {
   if (target.length === 2 && target.every(value => number.test(value))) { params.x = Number(target[0]); params.y = Number(target[1]); }
   else if (target.length === 1 && target[0].trim()) params.selector = target[0];
   else if (!(target.length === 0 && params.action && params.action !== 'move')) throw new Error(usage);
+  if (params.match !== undefined && !params.selector) throw new Error(usage);
   return { tabId: Number(tab), ...params };
 }
 
@@ -51,8 +56,18 @@ const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
   downloads save <id> --output <path>  Copy a completed download to this computer
   download <URL> [--filename <relative>]  Start a browser download
   screenshot <tabId> --output <path>  Save a PNG screenshot (new file; creates parent folders)
-  click <tabId> <selector>|<x> <y> [--button left|right|middle] [--count <n>]
-                           Click an element or viewport CSS pixel with real mouse input
+  click <tabId> <selector>|<x> <y> [--button left|right|middle] [--count <n>] [--text <contains>]
+                           [--real|--synthetic] [--no-fallback]
+                           Click with real mouse input. The target is re-resolved and confirmed at press
+                           time and retried if the page re-rendered; --text picks the selector match whose
+                           text contains it. If no click event arrives, falls back to a synthetic
+                           pointer/mouse event sequence (--real disables, --synthetic forces it)
+  key <tabId> <key> [--count <n>]  Press a real key: Enter, ArrowDown, Escape, a, or a combo like Control+a
+  type <tabId> <text> [--selector <css>] [--keys] [--keep]
+                           Type text; --keys sends real keydown/keyup per character (comboboxes), --keep
+                           does not clear the field first
+  navigate <tabId> <URL> [--wait-for <selector>] [--no-wait]
+                           Navigate and wait until the page renders (Gmail thread links wait for the thread)
   hover <tabId> <selector>|<x> <y>  Move the mouse over an element or viewport point
   mouse move <tabId> <selector>|<x> <y>  Move the mouse (held buttons drag)
   mouse down|up <tabId> [<selector>|<x> <y>] [--button <name>]  Press/release (default: last point)
@@ -96,7 +111,7 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'gate', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'gate', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'key', 'type', 'navigate', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
   let port = getPort(), token, baseUrl, fetchImpl;
   if (command === 'auth') { const { runAuth } = await import('../src/tools/cli.js'); await runAuth(args); return; }
@@ -184,6 +199,41 @@ ${help}`);
   if (['click', 'hover', 'mouse'].includes(command)) {
     const params = pointerParams(command, args);
     console.log(JSON.stringify(await client.call(command === 'mouse' ? 'page.mouse' : `page.${command}`, params), null, 2));
+    return;
+  }
+  if (command === 'key') {
+    const [tab, key, ...flags] = args;
+    if (!/^[0-9]+$/.test(tab || '') || !key || !(flags.length === 0 || (flags.length === 2 && flags[0] === '--count' && /^[1-9][0-9]*$/.test(flags[1])))) throw new Error('Usage: key <tabId> <key> [--count <n>]');
+    console.log(JSON.stringify(await client.call('page.key', { tabId: Number(tab), key, ...(flags.length ? { count: Number(flags[1]) } : {}) }), null, 2));
+    return;
+  }
+  if (command === 'type') {
+    const usage = 'Usage: type <tabId> <text> [--selector <css>] [--keys] [--keep]';
+    const [tab, text, ...flags] = args;
+    if (!/^[0-9]+$/.test(tab || '') || text === undefined) throw new Error(usage);
+    const params = { tabId: Number(tab), text };
+    while (flags.length) {
+      const flag = flags.shift();
+      if (flag === '--selector' && flags.length) params.selector = flags.shift();
+      else if (flag === '--keys') params.keys = true;
+      else if (flag === '--keep') params.clear = false;
+      else throw new Error(usage);
+    }
+    console.log(JSON.stringify(await client.call('page.type', params), null, 2));
+    return;
+  }
+  if (command === 'navigate') {
+    const usage = 'Usage: navigate <tabId> <URL> [--wait-for <selector>] [--no-wait]';
+    const [tab, url, ...flags] = args;
+    if (!/^[0-9]+$/.test(tab || '') || !url) throw new Error(usage);
+    const params = { tabId: Number(tab), url };
+    while (flags.length) {
+      const flag = flags.shift();
+      if (flag === '--wait-for' && flags.length) params.waitFor = flags.shift();
+      else if (flag === '--no-wait') params.wait = false;
+      else throw new Error(usage);
+    }
+    console.log(JSON.stringify(await client.call('tabs.navigate', params), null, 2));
     return;
   }
   if (command === 'record') {
