@@ -35,7 +35,7 @@ test('paired TLS authenticates endpoints, enforces desktop grants and streams st
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const b = JSON.parse(Buffer.concat(chunks).toString() || '{}'); seen.push(b);
     const result = b.method === 'tabs.list' ? [{ id: 1, url: 'https://example.test/' }, { id: 2, url: 'file:///private.txt' }]
-      : b.method === 'browsers.list' ? [{ name: 'orin' }, { name: 'main' }] : b.params;
+      : b.method === 'browsers.list' ? [{ id: 'orin-id', name: 'orin' }, { id: 'main-id', name: 'main' }] : b.params;
     res.end(JSON.stringify(req.url.startsWith('/status') ? { connected: true } : { result }));
   });
   const bridgePort = await listen(bridge); const files = createFiles({ directory: join(dir, 'uploads'), maxBytes: 1024 * 1024, maxStoredBytes: 2 * 1024 * 1024, maxFiles: 2, retentionMs: 10000 });
@@ -49,7 +49,7 @@ test('paired TLS authenticates endpoints, enforces desktop grants and streams st
   const childConfig = join(dir, 'child.json'); await writeFile(childConfig, JSON.stringify(options));
   const child = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `import {readFile} from 'node:fs/promises'; import {pairedFetch} from './src/tools/paired-client.js'; const o=JSON.parse(await readFile(process.argv[1],'utf8')); const r=await pairedFetch(o)(o.server+'/browser/desktop/status?browser=orin'); await r.json(); console.log('completed');`, childConfig], { timeout: 5000 });
   assert.match(child.stdout, /completed/, 'one-shot CLI exits after its response without waiting for tunnel expiry');
-  assert.deepEqual(await client.call('browsers.list'), [{ name: 'orin' }]);
+  assert.deepEqual(await client.call('browsers.list'), [{ id: 'orin-id', name: 'orin' }]);
   assert.deepEqual(await client.call('tabs.list'), [{ id: 1, url: 'https://example.test/' }]);
   await client.call('page.click', { tabId: 1, x: 10, y: 20 });
   await client.call('page.type', { tabId: 1, selector: '#text', text: 'synthetic-private-text-38d9' });
