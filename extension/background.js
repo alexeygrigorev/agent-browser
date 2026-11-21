@@ -449,10 +449,11 @@ async function click(tabId, params) {
   if (!['auto', 'real', 'synthetic'].includes(mode)) throw new Error('mode must be auto, real, or synthetic');
   if (params.match !== undefined && (typeof params.match !== 'string' || !params.selector)) throw new Error('match is text filter for selector and requires a selector');
   if (!params.selector && !params.ref && !(Number.isFinite(params.x) && Number.isFinite(params.y))) throw new Error('Provide selector or x and y coordinates, or an element ref');
-  const activated = await ensureForeground(tabId);
+  let activated = false;
   const step = (action, extra = {}) => pageCall(tabId, clickStep, { selector: params.selector, ref: params.ref, match: params.match, x: params.x, y: params.y, clickCount, ...extra, action });
   const result = extra => ({ clicked: true, ...extra, ...(activated ? { activatedTab: true } : {}) });
   if (mode === 'synthetic') return result({ ...await step('synthetic'), method: 'synthetic', attempts: 1 });
+  activated = await ensureForeground(tabId);
   let lastError, pressed = false;
   for (let attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++) {
     try {

@@ -254,6 +254,17 @@ test('click on a background tab activates it first so Chrome accepts the input',
   assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
 });
 
+test('an explicit synthetic click preserves the background tab and active user tab', async () => {
+  const { calls, command } = await setup();
+  const result = (await command('page.click', { tabId: 8, ref: 'e1', mode: 'synthetic' })).result;
+  assert.equal(result.clicked, true);
+  assert.equal(result.activatedTab, undefined);
+  const tabs = (await command('tabs.list')).result;
+  assert.equal(tabs.find(tab => tab.id === 8).active, false);
+  assert.equal(tabs.find(tab => tab.id === 7).active, true);
+  assert.ok(!calls.some(([method]) => ['Page.bringToFront', 'Input.dispatchMouseEvent'].includes(method)));
+});
+
 test('reference snapshots reserve distinct IDs across tabs and worker restarts; selectors remain the default', async () => {
   const { calls, command, session } = await setup();
   await command('page.snapshot', { tabId: 7 });
