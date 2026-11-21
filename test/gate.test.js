@@ -66,7 +66,7 @@ test('tunnels need a live phone approval grant, refuse loudly and alert when the
   tools.auth.state.credentials[hash(token)] = { owner: 'a', role: 'controller', grantId: 'synthetic', tools: ['browser'], expires: Date.now() + 600000 };
   tools.auth.state.credentials[hash(daemonToken)] = { owner: 'a', device: 'desktop', role: 'daemon', tools: ['browser'], expires: Date.now() + 600000 };
   const base = `http://127.0.0.1:${(await tools.listen(0)).port}`;
-  const bridge = http.createServer((req, res) => res.end(JSON.stringify(req.url.startsWith('/status') ? { connected: true } : { result: [{ name: 'orin' }] })));
+  const bridge = http.createServer((req, res) => res.end(JSON.stringify(req.url.startsWith('/status') ? { connected: true } : { result: [{ id: 'orin-id', name: 'orin' }] })));
   const bridgePort = await listen(bridge); let daemon;
   t.after(async () => { daemon?.terminate(); await tools.close(); await close(bridge); await rm(dir, { recursive: true, force: true }); });
   const client = createClient({ baseUrl: base + '/browser/desktop', browser: 'orin', fetchImpl: pairedFetch({ server: base, device: 'desktop', token, identity: controllerIdentity, daemonCertificate: daemonIdentity.certificate }) });
@@ -83,7 +83,7 @@ test('tunnels need a live phone approval grant, refuse loudly and alert when the
 
   // Granted and online: works.
   await new Promise(resolve => { daemon = connectDaemon({ server: base, token: daemonToken, identity: daemonIdentity, trustFile, bridgePort, onReady: resolve, onAudit: () => {} }); });
-  assert.deepEqual(await client.call('browsers.list'), [{ name: 'orin' }]);
+  assert.deepEqual(await client.call('browsers.list'), [{ id: 'orin-id', name: 'orin' }]);
   const devices = await (await fetch(base + '/browser/devices', { headers: { Authorization: `Bearer ${token}` } })).json();
   assert.equal(devices[0].grant.active, true);
 
