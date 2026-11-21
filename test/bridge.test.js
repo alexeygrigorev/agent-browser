@@ -170,6 +170,39 @@ test('extension file lists cannot escape the extension directory', async () => {
   assert.equal(await localCode([]), null);
 });
 
+test('safe automatic reload refuses an in-flight action without interrupting it', async t => {
+  const { command, connect } = await fixture(t);
+  const { ws } = await connect(await hello('busy'));
+  const received = once(ws, 'message');
+  const action = command('page.click', { tabId: 42, selector: '#submit' });
+  const [raw] = await received;
+  const message = JSON.parse(raw);
+  const info = (await (await command('extension.info')).json()).result;
+  assert.equal(info.capabilities.safeReload, true);
+  const reload = await command('extension.reload', { onlyIfIdle: true });
+  assert.equal(reload.status, 502);
+  assert.match((await reload.json()).error, /busy.*not reloaded/);
+  ws.send(JSON.stringify({ id: message.id, result: { clicked: true } }));
+  assert.deepEqual((await (await action).json()).result, { clicked: true });
+});
+
+test('safe reload locks out new actions until the extension reconnects', async t => {
+  const { command, connect } = await fixture(t);
+  const old = await connect(await hello('idle'));
+  const received = once(old.ws, 'message');
+  const reload = command('extension.reload', { onlyIfIdle: true });
+  const [raw] = await received;
+  const message = JSON.parse(raw);
+  assert.equal(message.method, 'extension.reload');
+  const action = await command('page.click', { tabId: 42, selector: '#submit' });
+  assert.match((await action.json()).error, /no browser action was sent/);
+  old.ws.send(JSON.stringify({ id: message.id, result: { reloading: true } }));
+  old.ws.close();
+  await once(old.ws, 'close');
+  await connect(await hello('idle'));
+  assert.equal((await (await reload).json()).result.reloaded, true);
+});
+
 test('extension reload waits for the reloaded worker to reconnect and reports its new code', async t => {
   const { command, connect } = await fixture(t);
   const old = await connect(await hello('reloading', 'a'.repeat(64)));

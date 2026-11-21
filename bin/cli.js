@@ -3,6 +3,7 @@ import { createBridge } from '../src/bridge.js';
 import { createClient, getPort } from '../src/client.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { prepareSimpleCommand, formatSimpleResult } from '../src/simple-cli.js';
 
 const pointerUsage = {
   click: 'Usage: click <tabId> <selector>|<x> <y> [--button left|right|middle] [--count <n>] [--text <contains>] [--real|--synthetic] [--no-fallback]',
@@ -43,6 +44,16 @@ function pointerParams(command, args) {
 }
 
 const help = `Usage: agent-browser-bridge [--browser <nickname-or-id>] <command>
+
+Simple workflow (also installed as browser):
+  connect [profile]         Connect once and remember the profile for this session
+  doctor [profile]          Inspect connection and version problems without changes
+  open <URL>               Open a background tab and return its snapshot
+  snapshot                 Show page text and short element references
+  click <eN>               Click a reference and return the updated page
+  fill <eN> <text>          Fill a field and return the updated page
+  --session <name>          Keep separate profile/tab contexts (before the command)
+  Add --json to a simple command for structured output.
 
   serve                    Start the local bridge; the extension connects automatically
   status                   Check whether Chrome is connected
@@ -101,18 +112,22 @@ async function main() {
   const argv = process.argv.slice(2);
   let browser;
   let remote;
+  let sessionName;
   let autoStart = process.env.AGENT_BROWSER_AUTOSTART !== '0';
-  while (['--browser', '--no-autostart', '--remote'].includes(argv[0])) {
+  while (['--browser', '--no-autostart', '--remote', '--session'].includes(argv[0])) {
     if (argv[0] === '--no-autostart') { autoStart = false; argv.shift(); continue; }
     if (argv[0] === '--remote') { remote = argv[1]; if (!remote || remote.startsWith('--')) throw new Error('Expected remote name'); argv.splice(0, 2); continue; }
+    if (argv[0] === '--session') { sessionName = argv[1]; if (!sessionName || sessionName.startsWith('--')) throw new Error('Expected session name'); argv.splice(0, 2); continue; }
     browser = argv[1];
     if (!browser || browser.startsWith('--')) throw new Error('Usage: --browser <nickname-or-id> <command>');
     argv.splice(0, 2);
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'gate', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'key', 'type', 'navigate', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+  if (!['connect', 'doctor', 'open', 'snapshot', 'fill', 'serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'gate', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'key', 'type', 'navigate', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
+  const simple = await prepareSimpleCommand({ command, args, browser, remote, sessionName });
+  if (simple) { browser = simple.browser; remote = simple.remote; }
   let port = getPort(), token, baseUrl, fetchImpl;
   if (command === 'auth') { const { runAuth } = await import('../src/tools/cli.js'); await runAuth(args); return; }
   if (command === 'daemon') {
@@ -160,6 +175,12 @@ ${help}`);
   if (command === 'teach') { const { runTeach } = await import('../src/teach-cli.js'); await runTeach({ port, browser, autoStart }, args); return; }
   const active = command !== 'status';
   const client = createClient({ port, browser, token, baseUrl, fetchImpl, autoStart: active && autoStart, waitForConnection: active });
+  if (simple) {
+    const result = await simple.execute(client);
+    console.log(simple.json ? JSON.stringify(result, null, 2) : formatSimpleResult(result));
+    if (result.ready === false) process.exitCode = 1;
+    return;
+  }
   if (command === 'mcp') { const { startMcp } = await import('../src/mcp.js'); await startMcp(client); return; }
   if (command === 'status') { console.log(JSON.stringify(await client.status(), null, 2)); return; }
   if (command === 'browsers') { console.log(JSON.stringify(await client.call('browsers.list'), null, 2)); return; }

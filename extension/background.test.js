@@ -254,6 +254,47 @@ test('click on a background tab activates it first so Chrome accepts the input',
   assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
 });
 
+test('reference snapshots reserve distinct IDs across tabs and worker restarts; selectors remain the default', async () => {
+  const { calls, command, session } = await setup();
+  await command('page.snapshot', { tabId: 7 });
+  assert.equal(session.nextElementRef, undefined);
+  await command('page.snapshot', { tabId: 7, refs: true });
+  await command('page.snapshot', { tabId: 8, refs: true });
+  const snapshots = calls.filter(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('function snapshot'));
+  assert.match(snapshots[1][2].expression, /"refStart":1/);
+  assert.match(snapshots[2][2].expression, /"refStart":501/);
+  assert.equal(session.nextElementRef, 1001);
+  const restarted = await setup({ sessionConfig: session });
+  await restarted.command('page.snapshot', { tabId: 7, refs: true });
+  assert.equal(restarted.session.nextElementRef, 1501);
+});
+
+test('ref click and type use the existing input paths and reject ambiguous targets before input', async () => {
+  const { calls, command } = await setup();
+  assert.equal((await command('page.click', { tabId: 7, ref: 'e1' })).result.clicked, true);
+  assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"ref":"e1"')));
+  assert.deepEqual(calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, , params]) => params.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+  assert.equal((await command('page.type', { tabId: 7, ref: 'e2', text: 'Hello' })).result.typed, true);
+  assert.equal(calls.find(([method]) => method === 'Input.insertText')[2].text, 'Hello');
+  const before = calls.length;
+  for (const method of ['page.click', 'page.type']) {
+    assert.match((await command(method, { tabId: 7, ref: 'bogus', text: '' })).error, /ref must be/);
+    assert.match((await command(method, { tabId: 7, ref: 'e1', selector: '#submit', text: '' })).error, /Use ref alone/);
+    assert.match((await command(method, { tabId: 7, ref: 'e1', x: 4, y: 5, text: '' })).error, /Use ref alone/);
+  }
+  assert.equal(calls.length, before);
+});
+
+test('a stale ref fails without retrying or pressing another element', async () => {
+  const { calls, command } = await setup({ clickStep: step => {
+    if (step.action === 'arm') throw new Error('Stale or unknown element reference e1; take a new snapshot');
+    return {};
+  } });
+  assert.match((await command('page.click', { tabId: 7, ref: 'e1' })).error, /Stale or unknown/);
+  assert.equal(calls.filter(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"action":"arm"')).length, 1);
+  assert.equal(calls.filter(([method]) => method === 'Input.dispatchMouseEvent').length, 0);
+});
+
 test('coordinate click, hover and mouse move/down/up dispatch real CDP input events', async () => {
   const { calls, command } = await setup();
   const mouseEvents = () => calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, , params]) => JSON.parse(JSON.stringify(params)));

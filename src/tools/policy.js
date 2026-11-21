@@ -8,13 +8,30 @@ export function webUrl(value) {
   try { const u = new URL(value); return ['https:', 'http:', 'data:', 'blob:'].includes(u.protocol) || value === 'about:blank'; } catch { return false; }
 }
 export function methodAllowed(method, mode) { return inspect.has(method) || mode !== 'inspect' && interact.has(method) || mode === 'script' && method === 'page.evaluate'; }
-export function createPolicy({ bridgePort = 19333, files = createFiles({ maxStoredBytes: 512 * 1024 * 1024, maxFiles: 128, retentionMs: 86400000 }), audit = () => {} } = {}) {
+export function createPolicy({ bridgePort = 19333, files = createFiles({ maxStoredBytes: 512 * 1024 * 1024, maxFiles: 128, retentionMs: 86400000 }), audit = () => {}, clientFactory = createClient } = {}) {
   async function invoke(policy, command) {
     const { method, params = {} } = command;
-    const browser = command.browser || (['browsers.list', 'access.info'].includes(method) ? policy.profiles[0] : undefined);
-    if (!policy.profiles.includes(browser) || !methodAllowed(method, policy.mode)) throw fail(403, 'Profile or command is outside the locally paired grant');
+    const requested = command.browser || (['browsers.list', 'access.info'].includes(method) ? policy.profiles[0] : undefined);
+    const denied = () => fail(403, 'Profile or command is outside the locally paired grant');
+    if (!requested || !methodAllowed(method, policy.mode)) throw denied();
+    // Grant inspection must remain available while Chrome is offline.
+    if (method === 'access.info' && policy.profiles.includes(requested)) return { profiles: policy.profiles, mode: policy.mode, origins: policy.origins, expires: policy.expires };
+    // A grant names profiles, while session routing pins their immutable IDs.
+    // Resolve against the current bridge inventory on EVERY command: a renamed
+    // profile must immediately lose a name-based grant, even for a saved ID.
+    const inventoryClient = clientFactory({ port: bridgePort });
+    const inventory = await inventoryClient.call('browsers.list');
+    const candidates = inventory.filter(profile => (profile.id === requested || profile.name === requested) && policy.profiles.includes(profile.name));
+    if (candidates.length !== 1) throw denied();
+    const selected = candidates[0];
+    if (typeof selected.id !== 'string' || !selected.id) throw denied();
+    const browser = selected.id;
     if (method === 'access.info') return { profiles: policy.profiles, mode: policy.mode, origins: policy.origins, expires: policy.expires };
-    const client = createClient({ port: bridgePort, browser });
+    if (method === 'browsers.list') {
+      audit('browser_command', { fingerprint: policy.fingerprint, profile: browser, method, outcome: 'allowed' });
+      return inventory.filter(profile => policy.profiles.includes(profile.name));
+    }
+    const client = clientFactory({ port: bridgePort, browser });
     if (['tabs.create', 'tabs.navigate', 'downloads.start'].includes(method) && params.url && !webUrl(params.url)) throw fail(403, 'Remote access to local or browser-internal URLs is denied');
     if (params.tabId !== undefined) {
       const tabs = await client.call('tabs.list'); const tab = tabs.find(t => t.id === params.tabId);
@@ -25,7 +42,6 @@ export function createPolicy({ bridgePort = 19333, files = createFiles({ maxStor
     if (method === 'page.upload') { try { await files.validateStaged(params.files); } catch { throw fail(403, 'Only valid staged uploads are allowed remotely'); } }
     const result = await client.call(method, params);
     audit('browser_command', { fingerprint: policy.fingerprint, profile: browser, method, outcome: 'allowed' });
-    if (method === 'browsers.list') return result.filter(b => policy.profiles.includes(b.name));
     if (method === 'tabs.list') return result.filter(t => webUrl(t.url) && (!t.pendingUrl || webUrl(t.pendingUrl)));
     return result;
   }

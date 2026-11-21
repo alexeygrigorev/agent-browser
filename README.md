@@ -18,18 +18,45 @@ This is an early developer release, available as an unpacked extension. Automate
 
 Requires Node.js 22 or newer and Chrome 120 or newer.
 
-1. Clone this repository and run `npm install` in its directory.
+1. Clone this repository and run `npm install` and `npm link` in its directory. This installs the `browser` command on your PATH.
 2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select this repository's `extension` directory.
-3. Run a browser command. It starts the local bridge if needed and waits for the extension to connect automatically:
+3. Connect to a profile, then open a page:
 
 ```sh
-node bin/cli.js call tabs.list '{}'
-node bin/cli.js status
+browser connect main
+browser open https://example.com
+browser snapshot
+browser click e3
+browser fill e8 "search text"
 ```
 
-No popup interaction is needed for normal use. Browser commands wait up to 35 seconds for the installed extension; `status` reports the current state without starting a bridge. `npm start` remains available to run the bridge in the foreground. Use **Pause** in the popup to explicitly pause browser access, and **Resume** after that deliberate pause. Temporary connection failures and bridge restarts reconnect automatically. Chrome displays its debugging indicator when a tab is being controlled.
+Use the actual `eN` references printed by the latest snapshot. `open`, `click` and `fill` return an updated snapshot, so the next command needs no separate inspection call. `fill` replaces the field's contents. `open` creates a new background tab rather than taking over your active tab. If you have not installed the PATH alias, substitute `node bin/cli.js` for `browser`.
 
-If updating an older unpacked extension, reload it once in `chrome://extensions` to refresh its popup and service worker. No pairing token is needed.
+`connect` starts a missing local bridge through the normal client startup path, selects the requested profile, and checks the running extension against this checkout. Without a profile name, it selects the only connected profile; with several connected profiles, it asks you to choose. A failed explicit selection never switches to another profile. If Chrome has not connected yet, open it and retry. No popup interaction is needed for normal use. A deliberate **Pause** remains paused until the user resumes it.
+
+### Sessions and short element references
+
+The default session remembers the selected profile and tab between commands. Use a named session for each task:
+
+```sh
+browser --session research connect main
+browser --session research open https://example.com
+browser --session research click e3
+browser --session research snapshot --json
+browser --session research doctor
+```
+
+Session metadata in `~/.agent-browser/sessions/NAME.json` contains only routing information: browser ID, remote alias when used, and tab ID. It does not store page content, element references, cookies, or credentials. Changing the explicit profile or remote clears the previous tab selection. `--json` after a simple command returns structured output; the default is compact readable text.
+
+References belong to the latest snapshot in that tab. A new snapshot, navigation, or replacement of the referenced element invalidates old references; take a fresh snapshot when told a reference is stale. References resolve to the observed element, never to a guessed selector. Simple `click eN` uses a synthetic page click; controls requiring trusted mouse or keyboard input can use the advanced tab-ID commands below.
+
+Actions briefly wait for page loading to settle and follow one newly opened tab or authentication popup whose opener is the session tab. They do not switch to pre-existing or unrelated popups. If several popups appear, inspect `call tabs.list '{}'` and use the advanced tab-ID commands to choose. The wait is bounded; use `snapshot` again for slower asynchronous updates. If an action succeeds but its refreshed snapshot fails, the error says the action was performed: inspect with `snapshot` before repeating it.
+
+### Connection diagnostics
+
+`browser doctor [profile]` checks connectivity and code versions without reloading or changing session metadata. `connect` can reload an outdated extension only when the bridge supports its guarded reload: it refuses while that profile has active commands, recording, or teaching work. Older bridges and extensions report the manual update step. A running bridge that predates a pull still needs an explicit restart when current tasks finish; `connect` does not kill processes. Remote policy may prohibit extension reload, in which case update it on the desktop. Neither command resumes a paused extension or changes permissions or access grants.
+
+The existing `node bin/cli.js status` command remains a status-only check without autostart; `npm start` runs the bridge in the foreground. Chrome displays its debugging indicator when a tab is being controlled.
 
 ### Updating the extension
 
@@ -46,7 +73,7 @@ On connect, the extension sends its manifest version and a SHA-256 hash of its s
 
 Remote agents: see [Browser service: API, health, phone gate and alerts](docs/service.md). Remote access needs an active phone approval grant.
 
-## Browser nicknames
+## Advanced: browser nicknames
 
 Give your connected Chrome profile a memorable name, then select it explicitly in agent commands:
 
@@ -184,8 +211,9 @@ On a controlling machine:
 ```sh
 node bin/cli.js auth login --device desktop
 node bin/cli.js auth status
-node bin/cli.js --remote desktop --browser orin call tabs.list '{}'
-node bin/cli.js --remote desktop --browser orin mcp
+browser --remote desktop --session remote-task connect orin
+browser --session remote-task open https://example.com
+browser --session remote-task snapshot
 ```
 
 `auth login` prints a verification link and code. Open the link, sign in through

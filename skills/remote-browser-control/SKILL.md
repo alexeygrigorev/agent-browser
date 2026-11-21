@@ -5,7 +5,7 @@ description: Control the desktop's existing signed-in Chrome from another machin
 
 Resolve the repository root as `../..` from this skill directory. Run commands
 there or supply an absolute `bin/cli.js` path. The desktop keeps Chrome and the
-extension; the controlling machine runs Node.js 22+ and this CLI/MCP client.
+extension; the controlling machine runs Node.js 22+ and this CLI client. Run `npm link` to install the `browser` alias, or substitute `node /absolute/repo/path/bin/cli.js`.
 
 ## Phone approval grant first
 
@@ -33,7 +33,9 @@ alert already. Details: `docs/service.md`.
 node bin/cli.js auth login --device desktop
 node bin/cli.js auth status
 node bin/cli.js remote check desktop
-node bin/cli.js --remote desktop --browser orin call tabs.list '{}'
+browser --remote desktop --session task connect orin
+browser --session task open https://example.com
+browser --session task snapshot
 ```
 
 The CLI prints a verification URL and code. Open that URL in the trusted browser,
@@ -78,11 +80,28 @@ cookies stay on the desktop.
 
 ## Browser selection and actions
 
-Use `--browser orin` on each command. Main requires a separate explicit local
+Use `browser --remote desktop --session task connect orin` to pin a named session, or `--remote desktop --browser orin` on each advanced command. Main requires a separate explicit local
 grant and credential; never use it as an automatic fallback. Explicit selection fails rather than
 switching profiles. One daemon carries all desktop profiles; never copy the
 extension or profile directories, edit ports or start a daemon per profile.
-Use `browsers`, then `tabs.list`, then `page.snapshot` before interacting. Inspect
+Simple commands use the same authenticated, granted route:
+
+```sh
+browser --remote desktop --session task connect orin
+browser --session task open https://example.com
+browser --session task click e3
+browser --session task fill e8 "query"
+browser --session task snapshot --json
+browser --session task doctor
+```
+
+Use references returned by the latest snapshot. `open` creates a fresh background tab; actions return a new snapshot after a bounded settle wait. `fill` replaces field contents. Short-reference clicks are synthetic; use advanced trusted-input commands when required. Each fresh snapshot or navigation invalidates old references, and replaced or removed elements are rejected as stale. Refresh the snapshot rather than guessing a replacement selector.
+
+Session files privately store only browser ID, remote alias, and tab ID, with no page content, references, cookies, or credentials. Once saved, the session retains its remote route; a failed remote call never falls back locally. Changing explicit profile/remote invalidates the old tab. `doctor` is read-only. `connect` checks code versions but remote policy blocks extension reload: perform an indicated extension update on the desktop. Restarting an outdated bridge/daemon is explicit and must wait for current work to finish. Neither command changes access grants or resumes Pause.
+
+After an action, the simple CLI follows one newly opened tab or authentication popup directly opened by the session tab. It never switches to a pre-existing or unrelated popup. Multiple new popups require advanced `tabs.list` inspection and tab-ID commands. If the action was performed but the new snapshot failed, inspect with `snapshot` before repeating it.
+
+For advanced tab-ID operations, use `browsers`, then `tabs.list`, then `page.snapshot` before interacting. Inspect
 the page before retrying a timed-out consequential action; it may have executed.
 The visible agent cursor and click pulse follow real CDP pointer input.
 
@@ -102,7 +121,6 @@ node bin/cli.js --remote desktop --browser orin download URL
 node bin/cli.js --remote desktop --browser orin downloads wait DOWNLOAD_ID
 node bin/cli.js --remote desktop --browser orin downloads save DOWNLOAD_ID --output ./report.pdf
 node bin/cli.js --remote desktop --browser orin extension
-node bin/cli.js --remote desktop --browser orin mcp
 ```
 
 Uploads stream files from the controlling machine and stage them on the desktop

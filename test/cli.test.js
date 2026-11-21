@@ -21,6 +21,44 @@ function run(args, input, env = {}, cwd) {
   });
 }
 
+test('simple CLI remembers its profile and tab across real processes and returns action snapshots', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'browser-simple-process-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = [];
+  let opened = false, value = '', clicked = false;
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/status')) return res.end(JSON.stringify({ connected: true }));
+    let body = ''; for await (const chunk of req) body += chunk;
+    const command = JSON.parse(body); calls.push(command);
+    let result;
+    const profile = { id: 'stable-main-id', name: 'main', connected: true };
+    if (command.method === 'browsers.list') result = [profile];
+    else if (command.method === 'browser.info') result = profile;
+    else if (command.method === 'extension.info') result = { browser: profile, extension: { current: true }, bridge: {} };
+    else if (command.method === 'tabs.list') result = opened ? [{ id: 42, status: 'complete' }] : [];
+    else if (command.method === 'tabs.create') { opened = true; assert.equal(command.params.active, false); result = { id: 42 }; }
+    else if (command.method === 'page.type') { value = command.params.text; assert.equal(command.params.ref, 'e1'); result = { typed: true }; }
+    else if (command.method === 'page.click') { clicked = true; assert.equal(command.params.ref, 'e2'); assert.equal(command.params.mode, 'synthetic'); result = { clicked: true }; }
+    else if (command.method === 'page.snapshot') result = { title: 'Fixture', url: 'https://example.test/', text: clicked ? `Saved ${value}` : value, elements: [{ ref: 'e1', tag: 'input' }, { ref: 'e2', tag: 'button', text: 'Save' }] };
+    else throw new Error(`Unexpected method ${command.method}`);
+    res.end(JSON.stringify({ result }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const env = { HOME: directory, USERPROFILE: directory, AGENT_BROWSER_PORT: String(server.address().port), AGENT_BROWSER_NAME: '' };
+  for (const args of [['connect', 'main'], ['open', 'https://example.test/'], ['fill', 'e1', 'Grüße "quoted"'], ['click', 'e2']]) {
+    const output = await run(['--session', 'process-test', ...args, '--json'], '', env);
+    assert.equal(output.code, 0, output.stderr);
+    const result = JSON.parse(output.stdout);
+    if (args[0] !== 'connect') assert.equal(result.tabId, 42);
+    if (args[0] === 'click') assert.equal(result.snapshot.text, 'Saved Grüße "quoted"');
+  }
+  const saved = JSON.parse(await readFile(join(directory, '.agent-browser', 'sessions', 'process-test.json'), 'utf8'));
+  assert.deepEqual(saved, { version: 1, browser: 'stable-main-id', tabId: 42 });
+  assert.ok(calls.filter(call => call.method.startsWith('page.')).every(call => call.browser === 'stable-main-id'));
+});
+
 test('CLI stdin preserves JSON quotes, Unicode, and spaces through a real process', async t => {
   let received;
   const server = http.createServer(async (req, res) => {

@@ -23,6 +23,7 @@ const CDP_TIMEOUT_MS = 20000;
 const SCREENSHOT_TIMEOUT_MS = 7000;
 const SCREENSHOT_ATTEMPTS = 3;
 let tabIdleMinutes = 15;
+let nextElementRef = 1;
 const saveIdleTabs = () => chrome.storage.session.set({ idleTabs: [...idleTabs] });
 async function touchIdleTab(tabId, create = false) {
   if (!Number.isInteger(tabId) || (!create && !idleTabs.has(tabId))) return;
@@ -61,7 +62,8 @@ const startup = chrome.storage.local.get(['enabled', 'paused', 'connectionError'
   if (!config.browserId) await chrome.storage.local.set({ browserId });
   browser = { id: browserId, connected: false };
   if (Number.isFinite(config.tabIdleMinutes) && config.tabIdleMinutes >= 1 && config.tabIdleMinutes <= 1440) tabIdleMinutes = config.tabIdleMinutes;
-  const session = await chrome.storage.session.get(['managedGroups', 'idleTabs']);
+  const session = await chrome.storage.session.get(['managedGroups', 'idleTabs', 'nextElementRef']);
+  if (Number.isSafeInteger(session.nextElementRef) && session.nextElementRef > 0) nextElementRef = session.nextElementRef;
   for (const group of session.managedGroups || []) if (group.ownerId === browserId) managedGroups.set(group.windowId, group);
   for (const [id, lastUsed] of session.idleTabs || []) if (Number.isInteger(id) && Number.isFinite(lastUsed)) idleTabs.set(id, lastUsed);
   await chrome.storage.local.remove('token');
@@ -237,7 +239,7 @@ function renameManagedGroups() {
 }
 
 // Runs in the page, with no access to extension secrets or privileges.
-function snapshot({ maxLength = 50000 } = {}) {
+function snapshot({ refs = false, maxLength = refs ? 12000 : 50000, refStart } = {}) {
   const selector = element => {
     if (element.id) return '#' + CSS.escape(element.id);
     const path = [];
@@ -249,17 +251,41 @@ function snapshot({ maxLength = 50000 } = {}) {
     }
     return 'html > ' + path.join(' > ');
   };
-  const elements = [...document.querySelectorAll('a,button,input,textarea,select,[role="button"],[contenteditable="true"]')]
+  const nodes = [...document.querySelectorAll('a,button,input,textarea,select,[role="button"],[contenteditable="true"]')]
     .filter(element => element.getClientRects().length)
-    .slice(0, 500).map(element => ({ selector: selector(element), tag: element.localName,
+    .slice(0, 500);
+  const references = new Map();
+  const elements = nodes.map((element, index) => {
+    const ref = `e${refStart + index}`;
+    if (refs) references.set(ref, element);
+    return { ...(refs ? { ref } : { selector: selector(element) }), tag: element.localName,
       text: (element.innerText || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '').slice(0, 300),
-      type: element.getAttribute('type'), href: element.getAttribute('href') }));
+      type: element.getAttribute('type'), href: element.getAttribute('href') };
+  });
+  if (refs) {
+    const previous = window.__agentBrowserRefs;
+    for (const type of ['hashchange', 'popstate', 'pagehide']) {
+      if (previous?.invalidate) window.removeEventListener(type, previous.invalidate);
+    }
+    const record = { document, url: location.href, nodes: references, invalidate: () => references.clear() };
+    window.__agentBrowserRefs = record;
+    // Back/forward restores can bring the same document and URL back later.
+    // Once navigated away, its old references must still stay invalid.
+    for (const type of ['hashchange', 'popstate', 'pagehide']) window.addEventListener(type, record.invalidate);
+    // Context such as verification codes and article text isn't interactive.
+    // Keep it readable alongside the compact element list, without CSS paths.
+    const text = (document.body?.innerText || '').slice(0, Math.min(maxLength, 200000));
+    return { title: document.title, url: location.href, text, elements };
+  }
   return { title: document.title, url: location.href, text: (document.body?.innerText || '').slice(0, Math.min(maxLength, 200000)), elements };
 }
-function targetAction({ selector, action, text, clear = true, match }) {
+function targetAction({ selector, ref, action, text, clear = true, match }) {
   // `match` filters the selector's matches by visible text, so a re-rendered
   // list is re-resolved by what the row says rather than by its position.
-  const element = match === undefined ? document.querySelector(selector)
+  const refs = window.__agentBrowserRefs;
+  const referenced = ref && refs?.document === document && refs.url === location.href && refs.nodes.get(ref);
+  if (ref && (!referenced || !referenced.isConnected || referenced.ownerDocument !== document)) throw new Error(`Stale or unknown element reference ${ref}; take a new snapshot`);
+  const element = ref ? referenced : match === undefined ? document.querySelector(selector)
     : [...document.querySelectorAll(selector)].find(item => item.getClientRects().length && (item.innerText || item.textContent || '').includes(match));
   if (!element) throw new Error(match === undefined ? `No element matches ${selector}` : `No element matches ${selector} containing text ${JSON.stringify(match)}`);
   // 'instant' matters: pages with `scroll-behavior: smooth` (Google Drive's
@@ -294,12 +320,15 @@ function targetAction({ selector, action, text, clear = true, match }) {
 // Atomic click support. Page-side, one evaluate per step, each re-resolving the
 // target so a list that re-renders between steps cannot send the press to a
 // stale position.
-function clickStep({ selector, match, x, y, action, expectHit, clickCount }) {
+function clickStep({ selector, ref, match, x, y, action, expectHit, clickCount }) {
   const state = window.__agentBrowserClick;
   const describe = node => node ? node.localName + (node.id ? `#${node.id}` : '') : 'nothing';
   const resolve = () => {
-    if (selector) {
-      const element = match === undefined ? document.querySelector(selector)
+    if (selector || ref) {
+      const refs = window.__agentBrowserRefs;
+      const referenced = ref && refs?.document === document && refs.url === location.href && refs.nodes.get(ref);
+      if (ref && (!referenced || !referenced.isConnected || referenced.ownerDocument !== document)) throw new Error(`Stale or unknown element reference ${ref}; take a new snapshot`);
+      const element = ref ? referenced : match === undefined ? document.querySelector(selector)
         : [...document.querySelectorAll(selector)].find(item => item.getClientRects().length && (item.innerText || item.textContent || '').includes(match));
       if (!element) throw new Error(match === undefined ? `No element matches ${selector}` : `No element matches ${selector} containing text ${JSON.stringify(match)}`);
       element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -419,9 +448,9 @@ async function click(tabId, params) {
   const mode = params.mode ?? 'auto';
   if (!['auto', 'real', 'synthetic'].includes(mode)) throw new Error('mode must be auto, real, or synthetic');
   if (params.match !== undefined && (typeof params.match !== 'string' || !params.selector)) throw new Error('match is text filter for selector and requires a selector');
-  if (!params.selector && !(Number.isFinite(params.x) && Number.isFinite(params.y))) throw new Error('Provide selector or x and y coordinates');
+  if (!params.selector && !params.ref && !(Number.isFinite(params.x) && Number.isFinite(params.y))) throw new Error('Provide selector or x and y coordinates, or an element ref');
   const activated = await ensureForeground(tabId);
-  const step = (action, extra = {}) => pageCall(tabId, clickStep, { selector: params.selector, match: params.match, x: params.x, y: params.y, clickCount, ...extra, action });
+  const step = (action, extra = {}) => pageCall(tabId, clickStep, { selector: params.selector, ref: params.ref, match: params.match, x: params.x, y: params.y, clickCount, ...extra, action });
   const result = extra => ({ clicked: true, ...extra, ...(activated ? { activatedTab: true } : {}) });
   if (mode === 'synthetic') return result({ ...await step('synthetic'), method: 'synthetic', attempts: 1 });
   let lastError, pressed = false;
@@ -452,7 +481,7 @@ async function click(tabId, params) {
     } catch (error) {
       await step('landing').catch(() => {});
       // Once the button went down, retrying could click twice.
-      if (pressed || error.cdpTimeout || /disconnected|^Real click/.test(error.message)) throw error;
+      if (pressed || error.cdpTimeout || /disconnected|^Real click|Stale or unknown element reference/.test(error.message)) throw error;
       lastError = error;
       await sleep(60 * attempt);
     }
@@ -606,10 +635,21 @@ async function dispatch(method, params = {}) {
     return { ...updated, ...await settleNavigation(tabId, params) };
   }
   if (method === 'page.upload') return upload(tabId, params);
-  if (method === 'page.snapshot') return pageCall(tabId, snapshot, params);
+  if (method === 'page.snapshot') {
+    if (!params.refs) return pageCall(tabId, snapshot, params);
+    const refStart = nextElementRef;
+    nextElementRef += 500;
+    // Reserve before exposing references, including across service-worker restarts.
+    await chrome.storage.session.set({ nextElementRef });
+    return pageCall(tabId, snapshot, { ...params, refStart });
+  }
   if (method === 'page.evaluate') {
     if (typeof params.expression !== 'string') throw new Error('expression must be a string');
     return evaluate(tabId, params.expression);
+  }
+  if ((method === 'page.click' || method === 'page.type') && params.ref !== undefined) {
+    if (typeof params.ref !== 'string' || !/^e[1-9]\d*$/.test(params.ref)) throw new Error('ref must be an element reference such as e1 from a snapshot');
+    if (params.selector !== undefined || params.match !== undefined || params.x !== undefined || params.y !== undefined) throw new Error('Use ref alone, without selector, match, or coordinates');
   }
   if (method === 'page.click') return click(tabId, params);
   if (method === 'page.hover') return { hovered: true, ...await mouse(tabId, 'mouseMoved', await point(tabId, params)) };
@@ -623,7 +663,7 @@ async function dispatch(method, params = {}) {
   }
   if (method === 'page.type') {
     if (typeof params.text !== 'string') throw new Error('text must be a string');
-    if (params.selector) await pageCall(tabId, targetAction, { ...params, action: 'type' });
+    if (params.selector || params.ref) await pageCall(tabId, targetAction, { ...params, action: 'type' });
     // `keys` sends real keydown/keypress/keyup per character, which is what
     // comboboxes and autocompletes listen to; the default inserts text in one go.
     if (params.keys) {
