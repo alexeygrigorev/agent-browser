@@ -29,7 +29,8 @@ test('explicit profile selection never falls back to another connected profile',
     const result = await connectBrowser(client, { profile: requested });
     assert.equal(result.ready, false);
     assert.match(result.diagnostics[0].code, /profile_(not_found|disconnected)/);
-    assert.equal(client.calls.length, 1);
+    assert.ok(client.calls.every(call => ['browsers.list', 'browser.info'].includes(call.method)));
+    assert.ok(client.calls.filter(call => call.method === 'browser.info').every(call => call.options.browser === other.id));
   }
   const client = fixture({ profiles: [main, other] });
   assert.equal((await connectBrowser(client, { profile: 'MAIN' })).profile.id, main.id);
@@ -39,8 +40,24 @@ test('missing or ambiguous connections explain the next step without changing an
   for (const [profiles, code] of [[[], 'extension_disconnected'], [[main, other], 'profile_ambiguous']]) {
     const client = fixture({ profiles });
     assert.equal((await connectBrowser(client)).diagnostics[0].code, code);
-    assert.equal(client.calls.length, 1);
+    assert.ok(client.calls.every(call => ['browsers.list', 'browser.info'].includes(call.method)));
   }
+});
+
+test('connect waits for its selected profile to reconnect while doctor remains immediate', async () => {
+  let connected = false;
+  const calls = [];
+  const client = { async call(method, params, options) {
+    calls.push({ method, options });
+    if (method === 'browsers.list') return [{ ...main, connected }];
+    if (method === 'browser.info') { assert.equal(options.browser, main.id); connected = true; return main; }
+    if (method === 'extension.info') return current;
+    throw new Error(method);
+  } };
+  assert.equal((await doctorBrowser(client, { profile: 'main' })).ready, false);
+  assert.equal(calls.some(call => call.method === 'browser.info'), false);
+  assert.equal((await connectBrowser(client, { profile: 'main' })).ready, true);
+  assert.equal(calls.filter(call => call.method === 'browser.info').length, 1);
 });
 
 test('bridge and access errors remain visible, with no alternate profile attempts', async () => {

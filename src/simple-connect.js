@@ -27,10 +27,24 @@ export async function connectBrowser(client, options = {}) {
     return fail('bridge_unavailable', message(error), 'Check the bridge endpoint and access approval; open Chrome with the extension enabled and not paused.');
   }
   if (!Array.isArray(profiles)) return fail('invalid_response', 'The bridge returned an invalid profile list.', 'Update and restart the browser bridge.');
-  const connected = profiles.filter(profile => profile?.connected === true);
-  const profile = requested === undefined
+  let connected = profiles.filter(profile => profile?.connected === true);
+  let profile = requested === undefined
     ? connected.length === 1 ? connected[0] : undefined
     : profiles.find(profile => profile?.id === requested || (typeof profile?.name === 'string' && profile.name.toLowerCase() === requested.toLowerCase()));
+  // Starting/restarting the bridge can precede the extension's reconnect by a
+  // few seconds. Use the normal bounded readiness wait instead of diagnosing a
+  // still-reconnecting Chrome as closed. Doctor remains an immediate read.
+  if (options.reload !== false && (profile?.connected === false || connected.length === 0)) {
+    try {
+      await client.call('browser.info', {}, requested === undefined ? {} : { browser: profile?.id || requested });
+      profiles = await client.call('browsers.list');
+      if (!Array.isArray(profiles)) throw new Error('Invalid profile list');
+      connected = profiles.filter(item => item?.connected === true);
+      profile = requested === undefined
+        ? connected.length === 1 ? connected[0] : undefined
+        : profiles.find(item => item?.id === requested || item?.name?.toLowerCase() === requested.toLowerCase());
+    } catch { /* Retain the specific disconnected/ambiguous diagnostic below. */ }
+  }
   if (!profile) {
     if (requested !== undefined) return fail('profile_not_found', `Profile is not connected: ${requested}.`, 'Open this Chrome profile and check its extension; no other profile was selected.');
     if (connected.length > 1) return fail('profile_ambiguous', 'Multiple profiles are connected; select a nickname or ID.', `Connected profiles: ${connected.map(profile => profile.name || profile.id).join(', ')}.`);
