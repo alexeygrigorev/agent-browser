@@ -23,14 +23,38 @@ async function setup({ clickStep = step => step.action === 'confirm' ? { ok: tru
     [8, { id: 8, windowId: 1, title: 'Other', url: 'https://example.org', active: false, groupId: -1 }],
     [9, { id: 9, windowId: 2, title: 'Second window', url: 'https://example.net', active: false, groupId: -1 }]
   ]);
-  const windows = new Map([[1, { id: 1, type: 'normal', focused: true }], [2, { id: 2, type: 'normal', focused: false }], [3, { id: 3, type: 'popup', focused: false }]]);
+  const windows = new Map([[1, { id: 1, type: 'normal', state: 'normal', focused: true }], [2, { id: 2, type: 'normal', state: 'normal', focused: false }], [3, { id: 3, type: 'popup', state: 'normal', focused: false }]]);
+  let nextWindowId = 10;
+  let nextTabId = 20;
   const nativeGroups = new Map(initialGroups.map(group => [group.id, { ...group }]));
   let groupId = 100;
   let groupRemoved;
   let tabCreated, tabRemoved, tabActivated;
   const downloads = new Map([[11, { id: 11, url: 'https://example.com/file.txt', filename: 'C:\\Downloads\\file.txt', state: 'in_progress', exists: true, bytesReceived: 4, totalBytes: 12, mime: 'text/plain' }]]);
   const chrome = {
-    windows: { get: async id => ({ ...windows.get(id) }), getAll: async () => [...windows.values()].map(window => ({ ...window })) },
+    windows: {
+      get: async id => ({ ...windows.get(id) }),
+      getAll: async opts => [...windows.values()].map(window => ({
+        ...window,
+        ...(opts?.populate ? { tabs: [...tabs.values()].filter(t => t.windowId === window.id).map(t => ({ ...t })) } : {})
+      })),
+      create: async opts => {
+        calls.push(['windows.create', opts]);
+        const id = nextWindowId++;
+        const tab = { id: nextTabId++, windowId: id, title: 'New Background', url: opts.url || 'about:blank', active: true, groupId: -1 };
+        const win = { id, type: opts.type || 'normal', state: opts.state || 'normal', focused: !!opts.focused };
+        windows.set(id, win);
+        tabs.set(tab.id, tab);
+        return { ...win, tabs: [{ ...tab }] };
+      },
+      update: async (id, opts) => {
+        calls.push(['windows.update', id, opts]);
+        const win = windows.get(id);
+        if (!win) throw new Error(`No window ${id}`);
+        Object.assign(win, opts);
+        return { ...win };
+      }
+    },
     storage: { local: {
       get: async () => ({ ...stored }), set: async value => Object.assign(stored, value),
       remove: async key => { delete stored[key]; }
@@ -115,7 +139,7 @@ async function setup({ clickStep = step => step.action === 'confirm' ? { ok: tru
   // Startup hashes the extension files before connecting.
   await vm.runInContext('startup', context);
   await new Promise(resolve => setImmediate(resolve));
-  return { calls, stored, socket, downloads, tabs, nativeGroups, session,
+  return { calls, stored, socket, downloads, tabs, windows, nativeGroups, session,
     currentSocket: () => socket,
     timers,
     runTimer: async delay => {
@@ -775,4 +799,40 @@ test('tabs.navigate waits for the page to settle and reports the final URL', asy
   assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('function navigationState')));
   assert.equal((await command('tabs.navigate', { tabId: 7, url: 'https://example.com/x', wait: false })).result.url, 'https://example.com/x');
   assert.match((await command('tabs.navigate', { tabId: 7, url: 'https://example.com/y', timeoutMs: 5 })).error, /timeoutMs/);
+});
+
+test('windows.create opens an unfocused normal background window and windows.list exposes windowState', async () => {
+  const { calls, command } = await setup();
+  const created = (await command('windows.create', { url: 'https://example.com' })).result;
+  assert.equal(created.state, 'normal');
+  assert.equal(created.focused, false);
+  assert.equal(typeof created.windowId, 'number');
+  assert.equal(typeof created.tabId, 'number');
+  assert.ok(calls.some(([method, opts]) => method === 'windows.create' && opts.focused === false && opts.state === 'normal'));
+  const list = (await command('windows.list')).result;
+  assert.ok(list.some(w => w.id === created.windowId && w.state === 'normal' && w.focused === false));
+  const tabs = (await command('tabs.list')).result;
+  assert.equal(tabs.find(t => t.id === created.tabId).windowState, 'normal');
+});
+
+test('minimized windows fail immediately with WINDOW_MINIMIZED without stealing focus or hanging CDP', async () => {
+  const { calls, command, windows } = await setup();
+  windows.get(2).state = 'minimized';
+  calls.length = 0;
+  for (const [method, params] of [
+    ['page.snapshot', { tabId: 9 }],
+    ['page.click', { tabId: 9, selector: '#go' }],
+    ['page.click', { tabId: 9, selector: '#go', mode: 'synthetic' }],
+    ['page.type', { tabId: 9, text: 'hi' }],
+    ['page.key', { tabId: 9, key: 'Enter' }],
+    ['page.screenshot', { tabId: 9 }],
+    ['cdp.send', { tabId: 9, method: 'Input.dispatchMouseEvent', params: {} }]
+  ]) {
+    const response = await command(method, params);
+    assert.match(response.error, /^WINDOW_MINIMIZED:/, `${method} should fail loudly with WINDOW_MINIMIZED`);
+  }
+  assert.ok(!calls.some(([method]) => ['Input.dispatchMouseEvent', 'Input.insertText', 'Page.bringToFront', 'windows.update'].includes(method)));
+  const restored = (await command('windows.restore', { windowId: 2 })).result;
+  assert.equal(restored.state, 'normal');
+  assert.equal(restored.focused, false);
 });

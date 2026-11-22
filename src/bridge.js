@@ -10,8 +10,9 @@ import { stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { extensionDir as defaultExtensionDir, gitHead, localCode, packageVersion } from './extension-code.js';
+import { createWindowController } from './windows-window.js';
 
-export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25000, onDiagnostic = () => {}, names = createBrowserNames(), files = createFiles(), teachOptions = {}, extensionDir = defaultExtensionDir } = {}) {
+export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25000, onDiagnostic = () => {}, names = createBrowserNames(), files = createFiles(), teachOptions = {}, extensionDir = defaultExtensionDir, windowController = createWindowController() } = {}) {
   const browsers = new Map();
   const pending = new Map();
   const reconnects = new Map();
@@ -79,6 +80,88 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
     pending.set(id, { resolve, reject, timer, browserId: browser.id });
     browser.ws.send(JSON.stringify({ method, params, id }));
   });
+  const unwrap = response => {
+    if (response?.error) throw new Error(typeof response.error === 'string' ? response.error : response.error.message);
+    return response?.result;
+  };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  async function waitWindowNormal(browser, windowId, attempts = 8) {
+    for (let i = 0; i < attempts; i++) {
+      const list = unwrap(await send(browser, 'windows.list', {}));
+      const win = list.find(w => w.id === windowId);
+      if (!win || win.state !== 'minimized') return win;
+      await sleep(75);
+    }
+    const list = unwrap(await send(browser, 'windows.list', {}));
+    return list.find(w => w.id === windowId);
+  }
+  async function restoreMinimizedWithoutFocus(browser, target) {
+    if (!windowController?.supported) return null;
+    const nativeResult = await windowController.restoreWindowBehind({ title: target.activeTabTitle, minimizedOnly: true }).catch(() => null);
+    if (!nativeResult?.ok) return nativeResult;
+    const refreshed = await waitWindowNormal(browser, target.id ?? target.windowId);
+    return { ...nativeResult, refreshed };
+  }
+  async function handleBackgroundWindow(browser, params = {}) {
+    if (params.restore || params.windowId !== undefined) {
+      const list = unwrap(await send(browser, 'windows.list', {}));
+      const target = params.windowId !== undefined
+        ? list.find(w => w.id === params.windowId)
+        : list.find(w => w.type === 'normal' && w.state === 'minimized') || list.find(w => w.type === 'normal');
+      if (!target) {
+        if (params.windowId !== undefined) throw new Error(`No Chrome window with id ${params.windowId}`);
+      } else if (target.state !== 'minimized') {
+        return { action: 'already_normal', windowId: target.id, tabId: target.activeTabId, state: target.state, focused: !!target.focused, focusPreserved: true };
+      } else {
+        const nativeResult = await restoreMinimizedWithoutFocus(browser, target);
+        let refreshed = nativeResult?.refreshed;
+        if (!refreshed || refreshed.state === 'minimized') {
+          const fallback = unwrap(await send(browser, 'windows.restore', { windowId: target.id }));
+          refreshed = { id: fallback.windowId, state: fallback.state, focused: fallback.focused, activeTabId: fallback.activeTabId };
+        }
+        return {
+          action: 'restored',
+          windowId: refreshed.id ?? target.id,
+          tabId: refreshed.activeTabId ?? target.activeTabId,
+          state: refreshed.state || 'normal',
+          focused: !!refreshed.focused,
+          focusPreserved: nativeResult?.focusPreserved ?? true,
+          ...(nativeResult?.hwnd ? { hwnd: nativeResult.hwnd } : {}),
+          ...(nativeResult?.foregroundBefore ? { foregroundBefore: nativeResult.foregroundBefore, foregroundAfter: nativeResult.foregroundAfter } : {})
+        };
+      }
+    }
+    const before = windowController?.supported ? await windowController.listChromeWindows().catch(() => null) : null;
+    const beforeHwnds = before?.windows?.map(w => w.hwnd);
+    const created = unwrap(await send(browser, 'windows.create', {
+      url: params.url || 'about:blank',
+      focused: false,
+      state: 'normal',
+      ...(params.width !== undefined ? { width: params.width } : {}),
+      ...(params.height !== undefined ? { height: params.height } : {}),
+      ...(params.left !== undefined ? { left: params.left } : {}),
+      ...(params.top !== undefined ? { top: params.top } : {})
+    }));
+    let nativeResult = null;
+    if (windowController?.supported) {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        nativeResult = await windowController.restoreWindowBehind({ beforeHwnds, title: created.title, minimizedOnly: false }).catch(() => null);
+        if (nativeResult?.ok) break;
+        await sleep(100);
+      }
+    }
+    const fgBefore = before?.foreground || nativeResult?.foregroundBefore;
+    const fgAfter = nativeResult?.foregroundAfter || fgBefore;
+    const focusPreserved = fgBefore && fgAfter ? fgBefore.hwnd === fgAfter.hwnd : (nativeResult?.focusPreserved ?? true);
+    return {
+      action: 'created',
+      ...created,
+      focused: false,
+      focusPreserved,
+      ...(nativeResult?.hwnd ? { hwnd: nativeResult.hwnd } : {}),
+      ...(fgBefore ? { foregroundBefore: fgBefore, foregroundAfter: fgAfter } : {})
+    };
+  }
   const recordings = createRecordings({ capture: async (browserId, tabId) => {
     const response = await send(select(browserId), 'page.screenshot', { tabId, format: 'jpeg', quality: 75 });
     if (response.error) throw new Error(typeof response.error === 'string' ? response.error : response.error.message);
@@ -163,8 +246,19 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
       }
       if (command.method === 'teach.start') return reply(res, 200, { result: await teach.start({ ...command.params, browserId: browser.id }) });
       if (command.method === 'recording.start') return reply(res, 200, { result: await recordings.start({ ...command.params, browserId: browser.id }) });
+      if (command.method === 'windows.background') return reply(res, 200, { result: await handleBackgroundWindow(browser, command.params) });
       if (command.method === 'page.upload') await files.validate(command.params.files);
-      reply(res, 200, await send(browser, command.method, command.params));
+      let response = await send(browser, command.method, command.params);
+      if (typeof response?.error === 'string' && response.error.startsWith('WINDOW_MINIMIZED:') && windowController?.supported && Number.isInteger(command.params?.tabId)) {
+        const info = await send(browser, 'windows.restore', { tabId: command.params.tabId, checkOnly: true }).then(unwrap).catch(() => null);
+        if (info?.windowId !== undefined) {
+          const restored = await restoreMinimizedWithoutFocus(browser, info);
+          if (restored?.ok && restored.refreshed?.state !== 'minimized') {
+            response = await send(browser, command.method, command.params);
+          }
+        }
+      }
+      reply(res, 200, response);
     } catch (error) {
       if (res.headersSent) res.destroy(error);
       else reply(res, error.statusCode || (error instanceof SyntaxError ? 400 : 502), { error: error.message });

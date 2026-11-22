@@ -79,6 +79,10 @@ Simple workflow (also installed as browser):
                            does not clear the field first
   navigate <tabId> <URL> [--wait-for <selector>] [--no-wait]
                            Navigate and wait until the page renders (Gmail thread links wait for the thread)
+  window background [URL] [--restore] [--window <id>]
+                           Open or restore a normal Chrome window behind the foreground window without taking focus
+  window restore [windowId]  Restore a minimized Chrome window behind the foreground window without taking focus
+  window list              List Chrome windows in the selected profile with state and focus
   hover <tabId> <selector>|<x> <y>  Move the mouse over an element or viewport point
   mouse move <tabId> <selector>|<x> <y>  Move the mouse (held buttons drag)
   mouse down|up <tabId> [<selector>|<x> <y>] [--button <name>]  Press/release (default: last point)
@@ -124,7 +128,7 @@ async function main() {
   }
   const [command, ...args] = argv;
   if (!command || ['help', '--help', '-h'].includes(command)) { console.log(help); return; }
-  if (!['connect', 'doctor', 'open', 'snapshot', 'fill', 'serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'gate', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'key', 'type', 'navigate', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
+  if (!['connect', 'doctor', 'open', 'snapshot', 'fill', 'serve', 'status', 'call', 'mcp', 'browser', 'browsers', 'screenshot', 'record', 'remote', 'auth', 'daemon', 'tools-server', 'gate', 'upload', 'downloads', 'download', 'click', 'hover', 'mouse', 'key', 'type', 'navigate', 'window', 'teach', 'extension'].includes(command)) throw new Error(`Unknown command: ${command}
 ${help}`);
   const simple = await prepareSimpleCommand({ command, args, browser, remote, sessionName });
   if (simple) { browser = simple.browser; remote = simple.remote; }
@@ -256,6 +260,33 @@ ${help}`);
     }
     console.log(JSON.stringify(await client.call('tabs.navigate', params), null, 2));
     return;
+  }
+  if (command === 'window') {
+    const usage = 'Usage: window background [URL] [--restore] [--window <id>] | window restore [windowId] | window list';
+    const [sub, ...rest] = args;
+    if (sub === 'list' && rest.length === 0) {
+      console.log(JSON.stringify(await client.call('windows.list'), null, 2));
+      return;
+    }
+    if (sub === 'restore' && (rest.length === 0 || (rest.length === 1 && /^[0-9]+$/.test(rest[0])))) {
+      const params = { restore: true, ...(rest[0] ? { windowId: Number(rest[0]) } : {}) };
+      console.log(JSON.stringify(await client.call('windows.background', params), null, 2));
+      return;
+    }
+    if (sub === 'background') {
+      const params = {};
+      const flags = [...rest];
+      while (flags.length) {
+        const flag = flags.shift();
+        if (flag === '--restore') params.restore = true;
+        else if (flag === '--window' && /^[0-9]+$/.test(flags[0] || '')) params.windowId = Number(flags.shift());
+        else if (!flag.startsWith('--') && !params.url) params.url = flag;
+        else throw new Error(usage);
+      }
+      console.log(JSON.stringify(await client.call('windows.background', params), null, 2));
+      return;
+    }
+    throw new Error(usage);
   }
   if (command === 'record') {
     let method, params;

@@ -107,6 +107,18 @@ node bin/cli.js --browser main call groups.manage '{"tabId":123}'
 
 Releasing a managed tab ungroups it and detaches the debugger. Inspecting or controlling it again can manage it again. `groups.manage` optionally accepts `title` and `color` for a custom group appearance.
 
+## Background windows without stealing focus
+
+Chrome throttles minimized windows, which causes CDP input and snapshots to hang. Open or restore a normal (non-minimized) Chrome window behind the user's current foreground window without taking OS focus:
+
+```sh
+node bin/cli.js --browser orin window background https://example.com
+node bin/cli.js --browser orin window restore
+node bin/cli.js --browser orin window list
+```
+
+On Windows, the bridge uses Win32 `ShowWindow(SW_SHOWNOACTIVATE)` and `SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE)` to keep the window behind the active foreground window without changing focus. If a command targets a tab inside a minimized window, the bridge attempts a focus-free restore on Windows or fails immediately with a named `WINDOW_MINIMIZED` error instead of timing out.
+
 ## Uploads and downloads
 
 Upload a file from the agent's computer into a page's file input:
