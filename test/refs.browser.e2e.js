@@ -65,7 +65,30 @@ try {
   const other = await browser.newPage();
   await other.setContent('<button>Different tab</button>');
   await assert.rejects(other.evaluate(`(${functions.clickStep})(${JSON.stringify({ ref: 'e501', action: 'arm' })})`), /Stale or unknown/);
-  console.log('Reference snapshots, real click/type input, stale DOM targets, navigation, and tab isolation passed.');
+
+  // Bounded snapshot: large DOM, giant text and huge data-URI href must stay strictly bounded.
+  const hugePage = await browser.newPage();
+  await hugePage.setContent(`
+    <title>${'T'.repeat(800)}</title>
+    <a id="biglink" href="data:application/pdf;base64,${'A'.repeat(200000)}">Download PDF</a>
+    <div id="bulk"></div>
+    <script>
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < 800; i++) {
+        const b = document.createElement('button');
+        b.textContent = 'Item ' + i + ' ' + 'x'.repeat(200);
+        frag.appendChild(b);
+      }
+      document.getElementById('bulk').appendChild(frag);
+    </script>
+  `);
+  const bounded = await hugePage.evaluate(`(${functions.snapshot})(${JSON.stringify({ refs: true, maxLength: 4000, refStart: 1001 })})`);
+  assert.ok(bounded.elements.length <= 500, `expected <= 500 elements, got ${bounded.elements.length}`);
+  assert.ok(bounded.text.length <= 4000, `expected text <= 4000, got ${bounded.text.length}`);
+  assert.ok(bounded.title.length <= 500, `expected title <= 500, got ${bounded.title.length}`);
+  const bigLink = bounded.elements.find(e => e.tag === 'a');
+  assert.ok(bigLink && bigLink.href.length <= 501, `expected bounded href, got ${bigLink?.href?.length}`);
+  console.log('Reference snapshots, real click/type input, stale DOM targets, navigation, bounded snapshots, and tab isolation passed.');
 } finally {
   await browser.close();
 }

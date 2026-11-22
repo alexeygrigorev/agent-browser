@@ -2,8 +2,8 @@ import { createClient } from '../client.js';
 import { fail } from './auth.js';
 import { createFiles } from '../files.js';
 
-const inspect = new Set(['access.info', 'browser.info', 'browsers.list', 'extension.info', 'tabs.list', 'groups.list', 'page.snapshot', 'page.screenshot', 'downloads.list', 'downloads.info', 'downloads.wait']);
-const interact = new Set(['tabs.create', 'tabs.navigate', 'tabs.close', 'groups.manage', 'groups.release', 'dialogs.handle', 'page.click', 'page.hover', 'page.mouse', 'page.type', 'page.key', 'page.scroll', 'page.upload', 'downloads.start']);
+const inspect = new Set(['access.info', 'browser.info', 'browsers.list', 'extension.info', 'tabs.list', 'windows.list', 'groups.list', 'page.snapshot', 'page.screenshot', 'downloads.list', 'downloads.info', 'downloads.wait']);
+const interact = new Set(['tabs.create', 'tabs.navigate', 'tabs.close', 'windows.background', 'windows.create', 'windows.restore', 'groups.manage', 'groups.release', 'dialogs.handle', 'page.click', 'page.hover', 'page.mouse', 'page.type', 'page.key', 'page.scroll', 'page.upload', 'downloads.start']);
 export function webUrl(value) {
   try { const u = new URL(value); return ['https:', 'http:', 'data:', 'blob:'].includes(u.protocol) || value === 'about:blank'; } catch { return false; }
 }
@@ -32,7 +32,7 @@ export function createPolicy({ bridgePort = 19333, files = createFiles({ maxStor
       return inventory.filter(profile => policy.profiles.includes(profile.name));
     }
     const client = clientFactory({ port: bridgePort, browser });
-    if (['tabs.create', 'tabs.navigate', 'downloads.start'].includes(method) && params.url && !webUrl(params.url)) throw fail(403, 'Remote access to local or browser-internal URLs is denied');
+    if (['tabs.create', 'tabs.navigate', 'windows.background', 'windows.create', 'downloads.start'].includes(method) && params.url && !webUrl(params.url)) throw fail(403, 'Remote access to local or browser-internal URLs is denied');
     if (params.tabId !== undefined) {
       const tabs = await client.call('tabs.list'); const tab = tabs.find(t => t.id === params.tabId);
       if (!tab || !webUrl(tab.url) || tab.pendingUrl && !webUrl(tab.pendingUrl)) throw fail(403, 'Remote access to local or browser-internal tabs is denied');

@@ -24,8 +24,11 @@ const definitions = [
   ['extension.reload', 'Reload the unpacked Chrome extension from disk and wait until it reconnects; reports the new code hash', object({})],
   ['browser.info', 'Show the connected browser identity and nickname', object({})],
   ['browser.rename', 'Persist a nickname for the connected browser', object({ name: string('Browser nickname') })],
-  ['tabs.list', 'List tabs across every window in the selected profile, including authentication popups. Returns windowType, windowId and openerTabId; refresh after a sign-in action opens a new window.', object({})],
+  ['tabs.list', 'List tabs across every window in the selected profile, including authentication popups. Returns windowType, windowState, windowId and openerTabId; refresh after a sign-in action opens a new window.', object({})],
   ['tabs.create', 'Create a browser tab', object({ url: string('URL to open'), active: { type: 'boolean' } })],
+  ['windows.list', 'List Chrome windows in the selected profile with state (normal/minimized/maximized) and focus', object({})],
+  ['windows.background', 'Open a new normal non-minimized Chrome window or restore a minimized window behind the current foreground window without taking OS focus', object({ url: string('URL to open (default about:blank)'), restore: { type: 'boolean', description: 'Restore an existing minimized window instead of creating a new one' }, windowId: { type: 'integer', description: 'Specific window ID to restore' } })],
+  ['windows.restore', 'Restore a minimized Chrome window to normal state without focus', object({ windowId: { type: 'integer' }, tabId })],
   ['tabs.close', 'Close a browser tab', object({ tabId })],
   ['tabs.navigate', 'Navigate an existing tab and wait until the page has rendered (settled:false if it did not within timeoutMs)', object({ tabId, url: string('Destination URL'), waitFor: string('CSS selector that must exist before returning'), wait: { type: 'boolean', default: true }, timeoutMs: { type: 'integer', minimum: 1000, maximum: 25000, default: 15000 } })],
   ['dialogs.handle', 'Accept or dismiss a JavaScript dialog without waiting for the page-action queue', object({ tabId, accept: { type: 'boolean', description: 'Accept the dialog when true, dismiss it when false' }, promptText: string('Optional text for a JavaScript prompt') })],
@@ -42,7 +45,7 @@ const definitions = [
 ];
 for (const [method, , schema] of definitions) {
   schema.properties.browser = string('Optional browser nickname or ID to select');
-  const required = ['extension.info', 'extension.reload', 'tabs.list', 'tabs.create', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop', 'downloads.start', 'downloads.list', 'downloads.info', 'downloads.wait', 'downloads.save', 'groups.list'].includes(method) ? [] : ['tabId'];
+  const required = ['extension.info', 'extension.reload', 'tabs.list', 'tabs.create', 'windows.list', 'windows.background', 'windows.restore', 'browser.info', 'browser.rename', 'browsers.list', 'recording.list', 'recording.stop', 'downloads.start', 'downloads.list', 'downloads.info', 'downloads.wait', 'downloads.save', 'groups.list'].includes(method) ? [] : ['tabId'];
   if (method === 'downloads.save') required.push('id', 'output');
   if (method === 'page.upload') required.push('selector', 'files');
   if (method === 'downloads.start') required.push('url');

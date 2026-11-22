@@ -239,28 +239,74 @@ function renameManagedGroups() {
 }
 
 // Runs in the page, with no access to extension secrets or privileges.
-function snapshot({ refs = false, maxLength = refs ? 12000 : 50000, refStart } = {}) {
+function snapshot({ refs = false, maxLength = refs ? 12000 : 50000, maxElements = 500, refStart } = {}) {
+  const textLimit = Math.max(0, Math.min(Number.isFinite(maxLength) ? maxLength : (refs ? 12000 : 50000), 200000));
+  const elemLimit = Math.max(0, Math.min(Number.isInteger(maxElements) ? maxElements : 500, 500));
+  const maxScan = Math.max(elemLimit * 10, 5000);
   const selector = element => {
     if (element.id) return '#' + CSS.escape(element.id);
     const path = [];
-    while (element && element !== document.documentElement) {
+    let depth = 0;
+    while (element && element !== document.documentElement && element.parentElement && depth < 32) {
       const tag = element.localName;
-      const siblings = [...element.parentElement.children].filter(item => item.localName === tag);
-      path.unshift(tag + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(element) + 1})` : ''));
+      let sameTag = 0, index = 0;
+      for (let child = element.parentElement.firstElementChild; child; child = child.nextElementSibling) {
+        if (child.localName === tag) {
+          sameTag++;
+          if (child === element) index = sameTag;
+        }
+      }
+      path.unshift(tag + (sameTag > 1 ? `:nth-of-type(${index})` : ''));
       element = element.parentElement;
+      depth++;
     }
-    return 'html > ' + path.join(' > ');
+    return ('html > ' + path.join(' > ')).slice(0, 500);
   };
-  const nodes = [...document.querySelectorAll('a,button,input,textarea,select,[role="button"],[contenteditable="true"]')]
-    .filter(element => element.getClientRects().length)
-    .slice(0, 500);
+  const readBoundedText = (root, limit) => {
+    if (!root || limit <= 0) return '';
+    const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG']);
+    const chunks = [];
+    let total = 0;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || skip.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+        if (parent.hidden || parent.closest?.('[hidden],[aria-hidden="true"],script,style,noscript,template,svg')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let node;
+    let visited = 0;
+    while ((node = walker.nextNode()) && total < limit && visited < 20000) {
+      visited++;
+      const raw = node.nodeValue;
+      if (!raw) continue;
+      const trimmed = raw.replace(/\s+/g, ' ').trim();
+      if (!trimmed) continue;
+      const remaining = limit - total;
+      const piece = trimmed.length > remaining ? trimmed.slice(0, remaining) : trimmed;
+      chunks.push(piece);
+      total += piece.length + 1;
+    }
+    return chunks.join('\n').slice(0, limit);
+  };
+  const nodes = [];
+  let scanned = 0;
+  for (const element of document.querySelectorAll('a,button,input,textarea,select,[role="button"],[contenteditable="true"]')) {
+    if (nodes.length >= elemLimit || scanned >= maxScan) break;
+    scanned++;
+    if (element.getClientRects().length) nodes.push(element);
+  }
   const references = new Map();
   const elements = nodes.map((element, index) => {
     const ref = `e${refStart + index}`;
     if (refs) references.set(ref, element);
+    const rawText = readBoundedText(element, 300) || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '';
+    const rawHref = element.getAttribute('href');
+    const href = rawHref ? (rawHref.length > 500 ? rawHref.slice(0, 500) + '…' : rawHref) : null;
     return { ...(refs ? { ref } : { selector: selector(element) }), tag: element.localName,
-      text: (element.innerText || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '').slice(0, 300),
-      type: element.getAttribute('type'), href: element.getAttribute('href') };
+      text: rawText.slice(0, 300),
+      type: element.getAttribute('type'), href };
   });
   if (refs) {
     const previous = window.__agentBrowserRefs;
@@ -272,12 +318,11 @@ function snapshot({ refs = false, maxLength = refs ? 12000 : 50000, refStart } =
     // Back/forward restores can bring the same document and URL back later.
     // Once navigated away, its old references must still stay invalid.
     for (const type of ['hashchange', 'popstate', 'pagehide']) window.addEventListener(type, record.invalidate);
-    // Context such as verification codes and article text isn't interactive.
-    // Keep it readable alongside the compact element list, without CSS paths.
-    const text = (document.body?.innerText || '').slice(0, Math.min(maxLength, 200000));
-    return { title: document.title, url: location.href, text, elements };
   }
-  return { title: document.title, url: location.href, text: (document.body?.innerText || '').slice(0, Math.min(maxLength, 200000)), elements };
+  // Context such as verification codes and article text isn't interactive.
+  // Keep it readable alongside the compact element list without allocating an unbounded DOM string.
+  const text = readBoundedText(document.body, textLimit);
+  return { title: (document.title || '').slice(0, 500), url: (location.href || '').slice(0, 2000), text, elements };
 }
 function targetAction({ selector, ref, action, text, clear = true, match }) {
   // `match` filters the selector's matches by visible text, so a re-rendered
@@ -452,7 +497,10 @@ async function click(tabId, params) {
   let activated = false;
   const step = (action, extra = {}) => pageCall(tabId, clickStep, { selector: params.selector, ref: params.ref, match: params.match, x: params.x, y: params.y, clickCount, ...extra, action });
   const result = extra => ({ clicked: true, ...extra, ...(activated ? { activatedTab: true } : {}) });
-  if (mode === 'synthetic') return result({ ...await step('synthetic'), method: 'synthetic', attempts: 1 });
+  if (mode === 'synthetic') {
+    await assertWindowNotMinimized(tabId);
+    return result({ ...await step('synthetic'), method: 'synthetic', attempts: 1 });
+  }
   activated = await ensureForeground(tabId);
   let lastError, pressed = false;
   for (let attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++) {
@@ -545,24 +593,30 @@ async function settleNavigation(tabId, params) {
   return { settled: false, url: state?.url, title: state?.title, ...(state?.selector && !state.present ? { missing: state.selector } : {}), status: 'timeout', ...(reloaded ? { reloaded } : {}) };
 }
 
+// Chrome throttles minimized windows so CDP input, focus emulation and snapshots
+// hang until timeout. Fail loudly and immediately with a named error instead of
+// hanging or stealing OS focus from the user.
+async function assertWindowNotMinimized(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  const win = await chrome.windows.get(tab.windowId);
+  if (win?.state === 'minimized') {
+    const error = new Error(`WINDOW_MINIMIZED: Tab ${tabId} is in a minimized Chrome window (windowId ${tab.windowId}); Chrome throttles minimized windows and CDP input/snapshot will time out. Run "window background" or "window restore" to open or restore a non-minimized background window without taking focus.`);
+    error.code = 'WINDOW_MINIMIZED';
+    throw error;
+  }
+  return { tab, win };
+}
+
 // Chrome drops or defers real input for a background tab (document.hidden), and
 // it grants no user activation, so a click "succeeds" but downloads, popups and
-// form submits do nothing. Bring the tab to the front before pressing.
+// form submits do nothing. Activate the tab within its own window without
+// stealing OS focus from the user's foreground window.
 async function ensureForeground(tabId) {
+  const { tab } = await assertWindowNotMinimized(tabId);
+  if (tab.active) return false;
+  await chrome.tabs.update(tabId, { active: true });
   const hidden = async () => await pageCall(tabId, () => document.visibilityState).catch(() => 'visible') === 'hidden';
-  const tab = await chrome.tabs.get(tabId);
-  if (tab.active && !await hidden()) return false;
-  if (!tab.active) await chrome.tabs.update(tabId, { active: true });
-  // An active tab in an unfocused, minimized or covered window is still hidden to Chrome.
-  for (const step of [
-    () => cdp(tabId, 'Page.bringToFront'),
-    () => chrome.windows.update(tab.windowId, { focused: true })
-  ]) {
-    if (!await hidden()) break;
-    await step().catch(() => {});
-    for (let i = 0; i < 10 && await hidden(); i++) await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  if (await hidden()) throw new Error('Tab stays hidden (its window is minimized or covered), so Chrome would ignore the click; bring the Chrome window to the front and retry');
+  for (let i = 0; i < 6 && await hidden(); i++) await sleep(50);
   return true;
 }
 
@@ -595,10 +649,81 @@ async function dispatch(method, params = {}) {
     return (await chrome.downloads.search({ limit, orderBy: ['-startTime'], ...(params.state === undefined ? {} : { state: params.state }) })).map(downloadMetadata);
   }
   if (method.startsWith('teach.')) return teachDispatch(method, params);
+  if (method === 'windows.list') {
+    const allWindows = await chrome.windows.getAll({ populate: true });
+    return allWindows.map(w => {
+      const tabs = w.tabs || [];
+      const activeTab = tabs.find(t => t.active);
+      return {
+        id: w.id,
+        type: w.type || 'unknown',
+        state: w.state || 'unknown',
+        focused: !!w.focused,
+        top: w.top, left: w.left, width: w.width, height: w.height,
+        tabCount: tabs.length,
+        activeTabId: activeTab?.id ?? null,
+        activeTabTitle: activeTab?.title || ''
+      };
+    });
+  }
+  if (method === 'windows.create') {
+    const url = params.url || 'about:blank';
+    if (typeof url !== 'string') throw new Error('url must be a string');
+    const focused = params.focused === undefined ? false : params.focused;
+    if (typeof focused !== 'boolean') throw new Error('focused must be a boolean');
+    const state = params.state ?? 'normal';
+    if (!['normal', 'minimized', 'maximized', 'fullscreen'].includes(state)) throw new Error('Unknown window state');
+    const createOpts = { url, focused, type: 'normal' };
+    const hasBounds = [params.width, params.height, params.left, params.top].some(v => v !== undefined);
+    if (hasBounds) {
+      for (const key of ['width', 'height', 'left', 'top']) {
+        if (params[key] !== undefined) {
+          if (!Number.isInteger(params[key])) throw new Error(`${key} must be an integer`);
+          createOpts[key] = params[key];
+        }
+      }
+    } else {
+      createOpts.state = state;
+    }
+    const win = await chrome.windows.create(createOpts);
+    const tab = win.tabs?.[0] || (await chrome.tabs.query({ windowId: win.id }))[0];
+    if (tab?.id !== undefined) {
+      await touchIdleTab(tab.id, true);
+      await manageTab(tab.id);
+    }
+    const refreshedTab = tab?.id !== undefined ? await chrome.tabs.get(tab.id).catch(() => tab) : null;
+    return {
+      windowId: win.id,
+      tabId: refreshedTab?.id ?? null,
+      state: win.state || state,
+      focused: !!win.focused,
+      url: refreshedTab?.url || refreshedTab?.pendingUrl || url,
+      title: refreshedTab?.title || ''
+    };
+  }
+  if (method === 'windows.restore') {
+    let targetWindowId = params.windowId;
+    if (targetWindowId === undefined && Number.isInteger(params.tabId)) {
+      targetWindowId = (await chrome.tabs.get(params.tabId)).windowId;
+    }
+    const allWindows = await chrome.windows.getAll({ populate: true });
+    let win = targetWindowId !== undefined
+      ? allWindows.find(w => w.id === targetWindowId)
+      : allWindows.find(w => w.type === 'normal' && w.state === 'minimized') || allWindows.find(w => w.type === 'normal');
+    if (!win) throw new Error('No normal Chrome window available to restore');
+    const activeTab = (win.tabs || []).find(t => t.active);
+    if (params.checkOnly) {
+      return { windowId: win.id, state: win.state || 'unknown', focused: !!win.focused, activeTabId: activeTab?.id ?? null, activeTabTitle: activeTab?.title || '' };
+    }
+    const updated = win.state === 'minimized'
+      ? await chrome.windows.update(win.id, { state: 'normal', focused: false })
+      : win;
+    return { windowId: updated.id, state: updated.state || 'normal', focused: !!updated.focused, activeTabId: activeTab?.id ?? null, activeTabTitle: activeTab?.title || '' };
+  }
   if (method === 'tabs.list') {
     const windows = new Map((await chrome.windows.getAll()).map(window => [window.id, window]));
     return (await chrome.tabs.query({})).map(({ id, windowId, title, url, active, status, groupId, openerTabId }) => ({
-      id, windowId, windowType: windows.get(windowId)?.type || 'unknown', windowFocused: windows.get(windowId)?.focused ?? false,
+      id, windowId, windowType: windows.get(windowId)?.type || 'unknown', windowState: windows.get(windowId)?.state || 'unknown', windowFocused: windows.get(windowId)?.focused ?? false,
       title, url, active, status, groupId, ...(openerTabId === undefined ? {} : { openerTabId }),
       managed: [...managedGroups.values()].some(group => group.id === groupId)
     }));
@@ -637,6 +762,7 @@ async function dispatch(method, params = {}) {
   }
   if (method === 'page.upload') return upload(tabId, params);
   if (method === 'page.snapshot') {
+    await assertWindowNotMinimized(tabId);
     if (!params.refs) return pageCall(tabId, snapshot, params);
     const refStart = nextElementRef;
     nextElementRef += 500;
@@ -653,17 +779,22 @@ async function dispatch(method, params = {}) {
     if (params.selector !== undefined || params.match !== undefined || params.x !== undefined || params.y !== undefined) throw new Error('Use ref alone, without selector, match, or coordinates');
   }
   if (method === 'page.click') return click(tabId, params);
-  if (method === 'page.hover') return { hovered: true, ...await mouse(tabId, 'mouseMoved', await point(tabId, params)) };
+  if (method === 'page.hover') {
+    await assertWindowNotMinimized(tabId);
+    return { hovered: true, ...await mouse(tabId, 'mouseMoved', await point(tabId, params)) };
+  }
   if (method === 'page.mouse') {
     const types = { move: 'mouseMoved', down: 'mousePressed', up: 'mouseReleased' };
     if (!Object.hasOwn(types, params.action)) throw new Error('action must be move, down, or up');
     if (params.action !== 'move') await ensureForeground(tabId);
+    else await assertWindowNotMinimized(tabId);
     const last = pointers.get(tabId);
     const target = params.selector || params.x !== undefined || params.y !== undefined || params.action === 'move' || !last ? await point(tabId, params) : last;
     return { action: params.action, ...await mouse(tabId, types[params.action], target, params) };
   }
   if (method === 'page.type') {
     if (typeof params.text !== 'string') throw new Error('text must be a string');
+    await assertWindowNotMinimized(tabId);
     if (params.selector || params.ref) await pageCall(tabId, targetAction, { ...params, action: 'type' });
     // `keys` sends real keydown/keypress/keyup per character, which is what
     // comboboxes and autocompletes listen to; the default inserts text in one go.
@@ -678,11 +809,13 @@ async function dispatch(method, params = {}) {
     if (typeof params.key !== 'string' || !params.key) throw new Error('key must be a string');
     const count = params.count ?? 1;
     if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('count must be an integer from 1 to 100');
+    await assertWindowNotMinimized(tabId);
     for (let i = 0; i < count; i++) await pressKey(tabId, params);
     return { pressed: true, ...(count > 1 ? { count } : {}) };
   }
   if (method === 'page.scroll') return pageCall(tabId, ({ x = 0, y = 600 }) => { window.scrollBy(x, y); return { x: scrollX, y: scrollY }; }, params);
   if (method === 'page.screenshot') {
+    await assertWindowNotMinimized(tabId);
     let clip;
     if (params.fullPage) {
       const layout = await cdp(tabId, 'Page.getLayoutMetrics');
@@ -708,6 +841,7 @@ async function dispatch(method, params = {}) {
   }
   if (method === 'cdp.send') {
     if (typeof params.method !== 'string') throw new Error('CDP method must be a string');
+    await assertWindowNotMinimized(tabId);
     return cdp(tabId, params.method, params.params || {});
   }
   throw new Error(`Unknown method: ${method}`);
