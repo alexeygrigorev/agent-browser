@@ -87,6 +87,16 @@ async function attach(tabId) {
         chrome.debugger.detach({ tabId }).catch(() => {});
         throw new Error('Browser access was disconnected');
       }
+      // Chromium's page handler only records a pending JavaScript dialog while
+      // the Page domain is enabled; without this, Page.handleJavaScriptDialog
+      // answers "No dialog is showing" for a real native confirm. Enabling it
+      // is passive (no focus change, no permission change) and best effort.
+      try {
+        await Promise.race([
+          chrome.debugger.sendCommand({ tabId }, 'Page.enable'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Page.enable timed out')), 5000))
+        ]);
+      } catch {}
       attached.add(tabId);
     })().finally(() => initializing.delete(tabId)));
     await initializing.get(tabId);
