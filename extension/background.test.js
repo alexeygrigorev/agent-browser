@@ -180,6 +180,16 @@ test('lists window.open tabs with their opener and supports page, navigation, an
   assert.equal(tabs.has(10), false);
 });
 
+test('enables the Page domain on attach so native dialogs are tracked before dialogs.handle', async () => {
+  const { calls, command } = await setup();
+  await command('dialogs.handle', { tabId: 7, accept: true });
+  const names = calls.map(([method]) => method);
+  const enable = names.indexOf('Page.enable');
+  assert.ok(enable > names.indexOf('attach'), 'Page.enable follows attach');
+  assert.ok(enable < names.indexOf('Page.handleJavaScriptDialog'), 'Page.enable precedes handleJavaScriptDialog');
+  assert.equal(names.filter(name => name === 'Page.enable').length, 1, 'enabled once per attach');
+});
+
 test('handles a JavaScript dialog while a page action is blocked on the command queue', async () => {
   let release;
   const blocked = new Promise(resolve => { release = resolve; });
