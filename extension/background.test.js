@@ -181,7 +181,9 @@ test('lists tabs, dispatches CDP once attached and reports invalid commands', as
   assert.equal((await command('page.screenshot', { tabId: 7 })).result.data, 'image');
   assert.equal(calls.filter(([method]) => method === 'attach').length, 1);
   assert.match((await command('page.click', { tabId: 7 })).error, /selector or x and y/);
+  assert.match((await command('page.click')).error, /tabId must be an integer/);
   assert.match((await command('unknown', { tabId: 7 })).error, /Unknown method/);
+  assert.match((await command('unknown')).error, /Unknown method/);
 });
 
 test('lists window.open tabs with their opener and supports page, navigation, and close commands', async () => {

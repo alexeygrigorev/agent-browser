@@ -131,7 +131,15 @@ export function createClient({ port = getPort(), timeout = 40000, autoStart = fa
       const selectedBrowser = options.browser ?? browser;
       if (selectedBrowser !== undefined && (typeof selectedBrowser !== 'string' || !selectedBrowser.trim())) throw new Error('Browser must be a non-empty nickname or ID');
       await ensureReady(selectedBrowser, ['browsers.list', 'recording.list', 'recording.stop', 'teach.stop', 'teach.status'].includes(method));
-      const payload = await request('/command', { method, params, ...(selectedBrowser === undefined ? {} : { browser: selectedBrowser }) });
+      let payload;
+      try {
+        payload = await request('/command', { method, params, ...(selectedBrowser === undefined ? {} : { browser: selectedBrowser }) });
+      } catch (error) {
+        if (['windows.list', 'windows.background', 'windows.restore', 'windows.create'].includes(method) && /^(?:tabId must be an integer|Unknown method:)/.test(error.message)) {
+          throw new Error(`Running browser bridge or Chrome extension predates ${method} (${error.message}). Restart the browser bridge/daemon and reload the extension (check \`extension info\`).`, { cause: error });
+        }
+        throw error;
+      }
       return Object.hasOwn(payload, 'result') ? payload.result : payload;
     }
   };

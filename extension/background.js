@@ -744,6 +744,8 @@ async function dispatch(method, params = {}) {
     await manageTab(tab.id);
     return chrome.tabs.get(tab.id);
   }
+  const tabMethods = new Set(['dialogs.handle', 'tabs.close', 'groups.manage', 'groups.release', 'tabs.navigate', 'page.upload', 'page.snapshot', 'page.evaluate', 'page.click', 'page.hover', 'page.mouse', 'page.type', 'page.key', 'page.scroll', 'page.screenshot', 'cdp.send']);
+  if (!tabMethods.has(method)) throw new Error(`Unknown method: ${method}`);
   const tabId = params.tabId;
   if (!Number.isInteger(tabId)) throw new Error('tabId must be an integer');
   if (method === 'dialogs.handle') {

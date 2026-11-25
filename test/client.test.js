@@ -253,3 +253,21 @@ test('readiness separates browser targets while management commands work without
   assert.ok(probes.includes('/status?browser=orin'));
   assert.ok(probes.includes('/status'));
 });
+
+test('client diagnoses stale bridge or extension when window commands fail with tabId must be an integer', async t => {
+  const server = http.createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    res.setHeader('Content-Type', 'application/json');
+    const command = JSON.parse(body);
+    if (command.method === 'windows.background') return res.end(JSON.stringify({ error: 'tabId must be an integer' }));
+    if (command.method === 'windows.list') return res.end(JSON.stringify({ error: 'Unknown method: windows.list' }));
+    res.end(JSON.stringify({ error: 'tabId must be an integer' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = createClient({ port: server.address().port });
+  await assert.rejects(client.call('windows.background'), /Running browser bridge or Chrome extension predates windows\.background.*Restart the browser bridge/);
+  await assert.rejects(client.call('windows.list'), /Running browser bridge or Chrome extension predates windows\.list.*Restart the browser bridge/);
+  await assert.rejects(client.call('page.click'), /^Error: tabId must be an integer$/);
+});
