@@ -80,19 +80,30 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
     pending.set(id, { resolve, reject, timer, browserId: browser.id });
     browser.ws.send(JSON.stringify({ method, params, id }));
   });
-  const unwrap = response => {
-    if (response?.error) throw new Error(typeof response.error === 'string' ? response.error : response.error.message);
+  const WINDOW_METHODS = new Set(['windows.list', 'windows.create', 'windows.restore']);
+  const staleWindowError = (method, message) => {
+    if (!WINDOW_METHODS.has(method)) return message;
+    if (/^(?:tabId must be an integer|Unknown method:)/.test(message)) {
+      return `Loaded Chrome extension predates ${method} (${message}). Reload the extension with \`extension reload\` or in chrome://extensions, then retry.`;
+    }
+    return message;
+  };
+  const unwrap = (response, method) => {
+    if (response?.error) {
+      const message = typeof response.error === 'string' ? response.error : response.error.message;
+      throw new Error(staleWindowError(method, message));
+    }
     return response?.result;
   };
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function waitWindowNormal(browser, windowId, attempts = 8) {
     for (let i = 0; i < attempts; i++) {
-      const list = unwrap(await send(browser, 'windows.list', {}));
+      const list = unwrap(await send(browser, 'windows.list', {}), 'windows.list');
       const win = list.find(w => w.id === windowId);
       if (!win || win.state !== 'minimized') return win;
       await sleep(75);
     }
-    const list = unwrap(await send(browser, 'windows.list', {}));
+    const list = unwrap(await send(browser, 'windows.list', {}), 'windows.list');
     return list.find(w => w.id === windowId);
   }
   async function restoreMinimizedWithoutFocus(browser, target) {
@@ -104,7 +115,7 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
   }
   async function handleBackgroundWindow(browser, params = {}) {
     if (params.restore || params.windowId !== undefined) {
-      const list = unwrap(await send(browser, 'windows.list', {}));
+      const list = unwrap(await send(browser, 'windows.list', {}), 'windows.list');
       const target = params.windowId !== undefined
         ? list.find(w => w.id === params.windowId)
         : list.find(w => w.type === 'normal' && w.state === 'minimized') || list.find(w => w.type === 'normal');
@@ -116,7 +127,7 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
         const nativeResult = await restoreMinimizedWithoutFocus(browser, target);
         let refreshed = nativeResult?.refreshed;
         if (!refreshed || refreshed.state === 'minimized') {
-          const fallback = unwrap(await send(browser, 'windows.restore', { windowId: target.id }));
+          const fallback = unwrap(await send(browser, 'windows.restore', { windowId: target.id }), 'windows.restore');
           refreshed = { id: fallback.windowId, state: fallback.state, focused: fallback.focused, activeTabId: fallback.activeTabId };
         }
         return {
@@ -141,7 +152,7 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
       ...(params.height !== undefined ? { height: params.height } : {}),
       ...(params.left !== undefined ? { left: params.left } : {}),
       ...(params.top !== undefined ? { top: params.top } : {})
-    }));
+    }), 'windows.create');
     let nativeResult = null;
     if (windowController?.supported) {
       for (let attempt = 0; attempt < 4; attempt++) {
@@ -249,6 +260,9 @@ export function createBridge({ port = 19333, timeout = 30000, reloadTimeout = 25
       if (command.method === 'windows.background') return reply(res, 200, { result: await handleBackgroundWindow(browser, command.params) });
       if (command.method === 'page.upload') await files.validate(command.params.files);
       let response = await send(browser, command.method, command.params);
+      if (typeof response?.error === 'string' && WINDOW_METHODS.has(command.method)) {
+        response = { ...response, error: staleWindowError(command.method, response.error) };
+      }
       if (typeof response?.error === 'string' && response.error.startsWith('WINDOW_MINIMIZED:') && windowController?.supported && Number.isInteger(command.params?.tabId)) {
         const info = await send(browser, 'windows.restore', { tabId: command.params.tabId, checkOnly: true }).then(unwrap).catch(() => null);
         if (info?.windowId !== undefined) {

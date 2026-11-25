@@ -150,3 +150,20 @@ test('bridge windows.background creates and places behind without focus, and aut
   assert.equal(already.action, 'already_normal');
   assert.equal(already.focusPreserved, true);
 });
+
+test('bridge explains stale extension when window commands return tabId must be an integer', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-browser-stale-win-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const bridge = createBridge({ port: 0, names: createBrowserNames({ path: join(dir, 'names.json') }) });
+  const address = await bridge.listen();
+  t.after(() => bridge.close());
+
+  const ws = await connectFakeExtension(address.port, () => {
+    throw new Error('tabId must be an integer');
+  });
+  t.after(() => ws.close());
+
+  const client = createClient({ port: address.port });
+  await assert.rejects(client.call('windows.list'), /Loaded Chrome extension predates windows\.list.*extension reload/);
+  await assert.rejects(client.call('windows.background', { restore: true }), /Loaded Chrome extension predates windows\.list.*extension reload/);
+});
