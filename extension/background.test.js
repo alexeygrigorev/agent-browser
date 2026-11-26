@@ -282,11 +282,28 @@ test('snapshot, selector click and typing dispatch the expected browser operatio
   assert.ok(calls.some(([method, , params]) => method === 'Runtime.evaluate' && params.expression.includes('"selector":"#name"')));
 });
 
-test('click on a background tab activates it first so Chrome accepts the input', async () => {
+test('auto click on a background tab stays synthetic in the background; mode real still activates', async () => {
   const { calls, command } = await setup();
   const result = (await command('page.click', { tabId: 8, x: 5, y: 6 })).result;
+  assert.equal(result.clicked, true);
+  assert.equal(result.method, 'synthetic');
+  assert.equal(result.background, true);
+  assert.equal(result.activatedTab, undefined);
+  const tabs = (await command('tabs.list')).result;
+  assert.equal(tabs.find(tab => tab.id === 8).active, false);
+  assert.equal(tabs.find(tab => tab.id === 7).active, true);
+  assert.ok(!calls.some(([method]) => ['Input.dispatchMouseEvent', 'tabs.update', 'windows.update'].includes(method)));
+  const real = (await command('page.click', { tabId: 8, x: 5, y: 6, mode: 'real' })).result;
+  assert.equal(real.activatedTab, true);
+  assert.equal(real.method, 'real');
+  assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
+});
+
+test('auto click falls back to the real path when the background synthetic step cannot resolve its target', async () => {
+  const { calls, command } = await setup({ clickStep: step => step.action === 'synthetic' ? (() => { throw new Error('No element at the requested point'); })() : step.action === 'confirm' ? { ok: true } : step.action === 'landing' ? { landed: true } : { x: step.x ?? 25, y: step.y ?? 40, target: 'button' } });
+  const result = (await command('page.click', { tabId: 8, x: 5, y: 6 })).result;
+  assert.equal(result.method, 'real');
   assert.equal(result.activatedTab, true);
-  assert.equal((await command('page.click', { tabId: 8, x: 5, y: 6 })).result.activatedTab, undefined);
   assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
 });
 

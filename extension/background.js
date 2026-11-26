@@ -511,6 +511,25 @@ async function click(tabId, params) {
     await assertWindowNotMinimized(tabId);
     return result({ ...await step('synthetic'), method: 'synthetic', attempts: 1 });
   }
+  // Background-first (owner request 2026-11-26): activating a hidden tab
+  // switches the visible tab inside the user's window, which is distracting.
+  // When the tab is already active, real input works without disturbance.
+  // When it is not, auto clicks run as a synthetic sequence in the background;
+  // pass mode 'real' (--real) when trusted input or user activation is
+  // required (downloads, file choosers, window.open). A synthetic dispatch
+  // that cannot even resolve its target falls back to the real path below.
+  const active = mode === 'auto' ? await (async () => {
+    const { tab } = await assertWindowNotMinimized(tabId);
+    return !!tab.active;
+  })() : true;
+  if (mode === 'auto' && !active) {
+    try {
+      return result({ ...await step('synthetic'), method: 'synthetic', background: true, attempts: 1 });
+    } catch (error) {
+      if (/^Provide selector|WINDOW_MINIMIZED/.test(error.message)) throw error;
+      // target unresolved in a background tab: activate and click for real
+    }
+  }
   activated = await ensureForeground(tabId);
   let lastError, pressed = false;
   for (let attempt = 1; attempt <= CLICK_ATTEMPTS; attempt++) {
