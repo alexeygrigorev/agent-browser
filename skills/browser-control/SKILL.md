@@ -92,3 +92,5 @@ node bin/cli.js --browser main record stop RECORDING_ID
 Screenshot files must not exist; missing parent folders are created; `.jpg`/`.jpeg` selects JPEG. Retain the recording ID and stop it when finished. Videos are silent WebM sampled from viewport frames, not audio or native screencasts. Desktop FFmpeg with `libvpx-vp9` must be on PATH or configured by `AGENT_BROWSER_FFMPEG`.
 
 Existing logins permit real account actions; stay within the user's task. Local processes can control the connected browser, so keep the bridge on loopback. Do not export cookies or modify unrelated tabs to establish access.
+
+If pages read `document.visibilityState` `hidden` while the Windows session is disconnected, Chrome was started without `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding`. Relaunch it with `windows/managed-chrome.ps1 -Restart` (see README, "Managed Chrome launch"); never start the bridge profile's Chrome any other way.

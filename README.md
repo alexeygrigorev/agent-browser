@@ -119,6 +119,18 @@ node bin/cli.js --browser orin window list
 
 On Windows, the bridge uses Win32 `ShowWindow(SW_SHOWNOACTIVATE)` and `SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE)` to keep the window behind the active foreground window without changing focus. If a command targets a tab inside a minimized window, the bridge attempts a focus-free restore on Windows or fails immediately with a named `WINDOW_MINIMIZED` error instead of timing out.
 
+## Managed Chrome launch (Windows)
+
+With the Windows session disconnected (`query session` shows `Disc`), Chrome throttles occluded and background renderers: `document.visibilityState` is `hidden`, trusted input is dropped and synthetic clicks never reach page handlers. `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding` fix that, but only apply when passed to the first Chrome process, so they are lost on any restart that does not carry them. `windows/managed-chrome.ps1` owns the launch and always passes both flags, together with `--profile-directory="Profile 1"` and `--restore-last-session`, so the same Chrome profile the bridge already connects to keeps its logins and open tabs. It never logs in or touches page state.
+
+```powershell
+powershell -File windows\managed-chrome.ps1 -Install   # autostart task: at logon and every 5 minutes, starts Chrome only if it is not running
+powershell -File windows\managed-chrome.ps1 -Restart   # save tab URLs, close Chrome, relaunch with the flags and restore tabs
+powershell -File windows\managed-chrome.ps1 -Verify    # exit 0 when the running Chrome carries both flags
+```
+
+`-Restart` stops Chrome, so run it from the account that owns the Chrome process; a lower-integrity session gets "Access is denied" and the running Chrome keeps its old flags. Tab URLs are also saved to `~/.agent-browser/managed-chrome-tabs.json`. After a restart, check `chrome://version` (command line) and `document.visibilityState` on a page (`cdp.send` `Runtime.evaluate`), which must read `visible` with the session disconnected.
+
 ## Uploads and downloads
 
 Upload a file from the agent's computer into a page's file input:
