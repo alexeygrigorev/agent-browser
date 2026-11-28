@@ -107,6 +107,9 @@ if ($Restart) {
     foreach ($p in $main) { & taskkill /PID $p.ProcessId /T /F | Out-Null }
     Start-Sleep -Seconds 2
   }
+  if (Get-Process chrome -ErrorAction SilentlyContinue) {
+    throw 'Failed to stop existing Chrome process(es) (access denied or still running); run -Restart from the account/session that owns Chrome.'
+  }
   Start-ManagedChrome
   return
 }
