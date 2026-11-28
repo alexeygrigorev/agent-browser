@@ -14,3 +14,7 @@ test('managed Chrome launch restores tabs in the existing profile', () => {
   assert.match(script, /--restore-last-session/);
   assert.match(script, /--profile-directory=\$ProfileDirectory/);
 });
+
+test('managed Chrome restart fails if existing Chrome cannot be stopped', () => {
+  assert.match(script, /Failed to stop existing Chrome process\(es\)/);
+});
